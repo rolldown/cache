@@ -76,10 +76,8 @@ Rolldown does not see config files or `process.env`. It receives options that
 are already evaluated, and plugins. Some inputs are therefore known only to the
 host.
 
-The **host** is the program that calls Rolldown and supplies its options. This
-document uses Vite as the example host. The same rules apply to any other host,
-such as a meta-framework built on Rolldown, the Rolldown CLI, or code that calls
-the Rolldown API directly.
+See the glossary for the definition of [host](../glossary.md). This document
+uses Vite as the example host. The same rules apply to any other host.
 
 | Input | Provided by | How a change is detected | What a change invalidates | Status |
 | --- | --- | --- | --- | --- |
@@ -241,10 +239,9 @@ Vite cannot see every input in guarantee 1. The user covers the rest:
    file can load another file with a dynamic import, and that import may run
    late. So the host knows the full list only when the build ends. An option
    that is set at the start cannot hold these files.
-2. **Hash only the options that affect the scan.** M1 hashes all serializable
-   options. A change to an option that only affects later stages, such as an
-   output file name, discards the cache. Dev and build also cannot share a
-   cache, because their options differ.
+2. **Hash only the options that affect the scan.** Today a change to an option
+   that only affects later stages, such as an output file name, discards the
+   cache. See [Options hash](#options-hash).
 3. **Let a plugin declare the values it reads when it runs.** M1 does not track
    a value such as `process.env.THEME` that a plugin hook reads. The user must
    put it into the cache key. A plugin could declare such values by name, so
@@ -271,9 +268,12 @@ Vite cannot see every input in guarantee 1. The user covers the rest:
       an update.
 
    Today Rolldown [watches only the real path][watch] that an import resolved
-   to. It cannot see that a link changed, so it does not build an updated
-   dependency correctly after `pnpm update`. It also does not resolve the
-   importer again when a user file moves or a new file takes over an import.
+   to. So it does not build an updated dependency correctly after
+   `pnpm update`, and it does not resolve the importer again when a user file
+   moves or a new file takes over an import. This defect is already in
+   Rolldown's incremental build. A restart repairs it today, because a restart
+   runs a full scan. With the cache, a restart reuses the saved result, so it
+   no longer repairs it.
 
 [watch]: https://github.com/rolldown/rolldown/blob/41f7dd782/internal-docs/dev-engine/implementation.md
 
