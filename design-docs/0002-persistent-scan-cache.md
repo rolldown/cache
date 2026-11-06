@@ -265,12 +265,21 @@ use the persistent cache in this mode.
    [What a restart skips](#what-a-restart-skips) needs a measurement of the
    steps that run again.
 
-3. **Can `this.load` and the assignment to `moduleSideEffects` be saved
-   later?** For `this.load`: save the call, and add the loaded module to the
-   inputs of the calling module, so that a change to that module makes the
-   saved result unusable. For the assignment: save it and apply it again.
+3. **Can a hook that calls `this.load` get a saved result later?** The call
+   runs the whole module task of another module and returns its
+   `ModuleInfo`, so the other module is an input of the calling hook.
 
-4. **Can the persistent cache work with `experimental.nativeMagicString`?**
+4. **Can a hook that assigns to `moduleSideEffects` get a saved result
+   later?** The assignment `this.getModuleInfo(id).moduleSideEffects = v`
+   runs a setter on the JavaScript side. The setter writes `v` into
+   [`moduleOptionMap`][optmap] for module `id` and marks the entry as changed.
+   Rust does not see this. After the scan, Rust calls the JavaScript function
+   `deferSyncScanData`, which returns every marked entry as
+   `{ id, sideEffects }`, and [`defer_sync_scan_data`][defer] writes each
+   value into the side effects of that module. So the assignment reaches Rust
+   late, through one call for the whole scan, and only for marked entries.
+
+5. **Can the persistent cache work with `experimental.nativeMagicString`?**
    The saved result would have to be written after the sourcemaps are added.
 
 ### Future work
