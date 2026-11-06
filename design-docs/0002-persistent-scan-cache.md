@@ -85,7 +85,7 @@ uses Vite as the example host. The same rules apply to any other host.
 | A file that a plugin registers with `addWatchFile` ([`transform_dependencies`][td]) | Rolldown | The content hash differs from the saved hash | The modules that registered it | `decided` |
 | Normalized options ([`NormalizedBundlerOptions`][nbo]) | Rolldown | The [options hash](#options-hash) differs from the saved hash | The whole cache | `proposed` |
 | Cache key | Host | The string differs from the saved string | The whole cache | `proposed` |
-| A build dependency | Host | The content hash differs from the saved hash | The whole cache | `proposed` |
+| A [build dependency](../glossary.md) | Host | The content hash differs from the saved hash | The whole cache | `proposed` |
 
 File content hashes are compared as defined in
 [Restart Validation](0001-restart-validation.md).
