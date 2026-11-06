@@ -171,12 +171,134 @@ Two notes:
 - **Paths** are saved as absolute paths. M2 is expected to change this,
   because absolute paths differ between worktrees.
 
+### Side effects
+
+Status: `decided`.
+
+A skipped step can do more than return a value. Rolldown records every such
+action that happens during the module task, whichever hook caused it, and
+does it again when it reuses the saved result:
+
+| Action in a skipped step | On reuse, Rolldown |
+| --- | --- |
+| A hook calls `this.addWatchFile` | Adds the file to the watched files. From `load` and `transform`, also to the inputs of the module. |
+| A hook calls `this.emitFile` | Emits the same asset, chunk, or prebuilt chunk with the same arguments. The reference id stays the same, because Rolldown [computes it from the file's content or name][refid]. |
+| A native plugin calls [`associate_module_with_file_ref`][assoc] | Links the module to the emitted file again. The `new URL()` finalizer reads this link. |
+| A hook calls `this.warn`, `this.info`, or `this.debug` | Prints the same log. |
+| Rolldown reads the module file from disk | Adds the file, and the tsconfig that governs it, to the watched files, as [`load_source`][load_source] does today. |
+| `resolveId` finds no module | Gives the saved "not found" result to the code in [`resolve_dependencies`][not_found] that runs after resolution. It treats the import as external and prints the warning, as it does today. |
+
+### Caveats
+
+**Modules that get no saved result.** When a skipped hook of a module does
+one of these, Rolldown saves no result for the module. Its hooks run on every
+restart. The build result is correct, but the module gets no benefit from the
+cache.
+
+- **A hook returns a `meta` value that is not empty.** `meta` never reaches
+  Rust. It lives only in a map on the JavaScript side
+  ([`moduleOptionMap`][optmap]), and it can hold values that cannot be
+  serialized. A later milestone is expected to use `meta` as the way for a
+  plugin to keep state across restarts. See [Future work](#future-work).
+- **A hook calls `this.load`.** The call runs the whole module task of
+  another module and returns its `ModuleInfo`. The hook can use that
+  information in its result, so the other module is an input that Rolldown
+  does not track.
+- **A hook assigns to `moduleSideEffects` on an object from
+  `this.getModuleInfo`.** The assignment is stored on the JavaScript side and
+  applied to the other module after the scan
+  ([`defer_sync_scan_data`][defer]). When the hook is skipped, the assignment
+  is missing. Vite's `vite:build-html` plugin does this in its `transform`
+  hook.
+
+**No cache with `experimental.nativeMagicString`.** When this option and
+sourcemaps are both on, the sourcemap of a `transform` is
+[added to the module after all modules are loaded][magic], not during the
+module task. A result saved during the task would miss it. Rolldown does not
+use the persistent cache in this mode.
+
+**Inputs that M1 does not track.**
+
+- `resolveId` is skipped, but the files that the resolver reads are not
+  tracked. See item 1 of [Future work](#future-work-2).
+- A user who writes `with { type: ... }` must turn on
+  `experimental.importAttributes`. The attributes are then part of the module
+  id. Without the option, the module type that the importer asserts is not an
+  input of the saved result.
+- A skipped hook can read values that Rolldown does not track, such as the
+  result of `this.resolve`, the `ModuleInfo` of another module from
+  `this.getModuleInfo`, or a file through `this.fs`. The host covers them. See
+  [What the host must guarantee](#what-the-host-must-guarantee).
+
+### Open questions
+
+1. **How are the module options on the JavaScript side saved and restored?**
+   This needs an answer before this design is accepted. `moduleSideEffects`
+   and `meta` of each module live in [`moduleOptionMap`][optmap]. The
+   JavaScript binding code writes a hook's return value into the map and
+   passes the map's value to Rust ([`bindingifyLoad`][bind] and the other two
+   hooks). Rust receives `moduleSideEffects` but not `meta`. This causes three
+   problems:
+
+   1. After a restart, the map is empty for a module whose saved result is
+      reused. `this.getModuleInfo(id).moduleSideEffects` then differs from a
+      build without the cache.
+   2. Rust cannot tell a value that the module's own hooks returned from a
+      value that came from the `resolveId` hook of the importing module. For
+      example, the `resolveId` hook of `a.ts` returns `moduleSideEffects:
+      false` for `./b`, and the hooks of `b.ts` return no value. The binding
+      code then passes the map's value, `false`, to Rust after `load` and
+      `transform` of `b.ts`, and the saved result of `b.ts` holds `false` as
+      its own value. When the `resolveId` hook of `a.ts` later returns `true`
+      and `b.ts` did not change, the saved result of `b.ts` is reused with
+      the old `false`.
+   3. Rolldown has no call from Rust to JavaScript that writes this map. The
+      only bridge today runs the other way: after the scan, Rust asks
+      JavaScript for the entries that a plugin changed through
+      `moduleInfo.moduleSideEffects = v`
+      ([`defer_sync_scan_data`][defer]), and it carries `moduleSideEffects`
+      only.
+
+2. **What does it cost to parse every module again?** The
+   [M1 deliverable](../milestones.md#m1-persistent-scan-cache) asks that the
+   choice of saved data rests on measurements. The decision in
+   [What a restart skips](#what-a-restart-skips) needs a measurement of the
+   steps that run again.
+
+3. **Can `this.load` and the assignment to `moduleSideEffects` be saved
+   later?** For `this.load`: save the call, and add the loaded module to the
+   inputs of the calling module, so that a change to that module makes the
+   saved result unusable. For the assignment: save it and apply it again.
+
+4. **Can the persistent cache work with `experimental.nativeMagicString`?**
+   The saved result would have to be written after the sourcemaps are added.
+
+### Future work
+
+1. **Let a plugin keep state across restarts through `meta`.** Today a plugin
+   can keep state in its own memory, for example in `transform`, and read it
+   in a hook that runs after the scan, such as `renderChunk` or
+   `generateBundle`. After a restart with a reused result, that state is
+   missing, and Rolldown cannot see it. The milestone for this is not decided.
+   It is not M1, and the sooner the better. The expected design: a plugin
+   turns the cache on for a hook. It then puts the state that
+   `renderChunk`, `generateBundle`, and other later hooks need into `meta`, as
+   values that can be serialized. Rolldown saves `meta` with the result and
+   restores it on a restart. A hook that does not turn the cache on runs on
+   every restart.
+
 [task]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/module_task.rs#L99
 [load_source]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/module_task.rs#L255
 [resolved_id]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/types/resolved_id.rs#L41
 [not_found]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/resolve_utils.rs#L109
 [format]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/utils/resolve_id_with_plugins.rs#L21
 [pkg]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_resolver/src/resolver.rs#L113
+[refid]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/file_emitter.rs#L279
+[assoc]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/file_emitter.rs#L468
+[optmap]: https://github.com/rolldown/rolldown/blob/2842dcd7c/packages/rolldown/src/plugin/plugin-context-data.ts#L47
+[defer]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/deferred_scan_data.rs#L10
+[magic]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/stages/scan_stage.rs#L241
+[bind]: https://github.com/rolldown/rolldown/blob/2842dcd7c/packages/rolldown/src/plugin/bindingify-build-hooks.ts#L280
 
 ## Cache validity
 
@@ -250,7 +372,7 @@ Rules:
 
 M1 hashes all serializable options, including options that only affect later
 stages, such as output file names. Changing one of those discards the cache
-without need. This is safe but wasteful. See [Future work](#future-work).
+without need. This is safe but wasteful. See [Future work](#future-work-1).
 
 M2 is expected to change this rule. Options such as `cwd` hold absolute paths,
 which differ between worktrees, so hashing them as they are would prevent
