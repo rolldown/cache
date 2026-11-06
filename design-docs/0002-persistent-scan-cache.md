@@ -19,13 +19,15 @@ the same worktree. A restart then skips the saved scan work for modules whose
 inputs did not change while Rolldown was stopped.
 
 Main decision (`decided`, from the [M1 goal][m1]): keep the existing
-module-level incremental model. Partial scans and the merge path stay as they
-are; the saved data feeds into them.
+module-level incremental model. [`ScanStageCache`][cache], partial scans, and
+the merge path stay as they are. They serve rebuilds inside one process and
+are not saved.
 
-Which scan data is saved is `open` and decided in [Serialization](#serialization).
-It may be only a part of the snapshot, such as transform results keyed by
-stable module id. The saved data may therefore differ from the in-memory
-snapshot.
+The persistent cache is separate from `ScanStageCache` (`decided`). It holds
+the results of the plugin hooks for each module. The first scan after a
+restart is still a full scan. For a module whose inputs did not change, it
+reuses these results and does not run the hooks again.
+[Serialization](#serialization) defines what is saved.
 
 [cache]: https://github.com/rolldown/rolldown/blob/41f7dd782/crates/rolldown/src/types/scan_stage_cache.rs#L23
 [merge]: https://github.com/rolldown/rolldown/blob/41f7dd782/crates/rolldown/src/types/scan_stage_cache.rs#L123
@@ -62,6 +64,119 @@ change its decisions, following the rules in
 ## Storage and incremental writes
 
 ## Serialization
+
+This section defines what Rolldown saves for each module.
+[Cache validity](#cache-validity) defines when a saved result is reused.
+[Storage and incremental writes](#storage-and-incremental-writes) defines how
+saved results are found, written, and removed.
+
+### What a restart skips
+
+Status: `decided`.
+
+A [module task][task] runs these steps for one module. After a restart, the
+steps with a dashed border are skipped for a module whose saved result is
+reused. The other steps run again.
+
+```mermaid
+flowchart LR
+    L[load] --> T[transform] --> P[parse and AstScanner] --> R[resolveId for each import] --> M[moduleParsed]
+    classDef skipped stroke-dasharray: 5 5
+    class L,T,R skipped
+```
+
+- **`load`, `transform`, and `resolveId` are skipped.** These plugin hooks
+  compute the result of a module. [Goal 1](../goals.md#goals) asks that a
+  cache hit skips them.
+- **Parsing and `AstScanner` run again.** So Rolldown saves no AST and no
+  symbol table. The saved data is plain data, such as strings and paths.
+- **`moduleParsed` runs again.** Plugins then see every module, as in a build
+  without the cache.
+
+A module has one saved result for the three skipped steps. It is reused as a
+whole or not at all. [M1](../milestones.md#m1-persistent-scan-cache) does not
+cache the three steps independently.
+
+The `resolveId` call for an entry has no importing module, so no saved result
+can hold it. It runs on every restart (`proposed`).
+
+For example, `a.ts` imports `./b`, and a plugin transforms `a.ts`. After a
+restart with no changes, Rolldown takes the transformed code of `a.ts` from
+its saved result and parses it again. Parsing finds the import `./b`. Rolldown
+takes the `resolveId` result for `./b` from the same saved result, and
+continues with `b.ts`.
+
+### What a saved result holds
+
+Status: `decided`.
+
+A value that a skipped step produces is saved only when something that is not
+skipped reads it:
+
+- a step that runs again, for example the parser reads the code that
+  `transform` returns;
+- a later stage, for example generate reads the sourcemaps;
+- the module task of another module, for example the task of `b.ts` reads
+  the `resolveId` result that the task of `a.ts` saved for `./b`.
+
+For example, `load` returns code. Only `transform` reads it, and `transform`
+is skipped too, so this code is not saved.
+
+This rule gives a saved result three parts.
+
+**State after `transform`.** It replaces `load` and `transform`. These are the
+values that [`run_inner`][task] holds after `load_source` returns:
+
+| Saved | Value in Rolldown |
+| --- | --- |
+| The code | `source: StrOrBytes` |
+| The module type | `module_type: ModuleType` |
+| The `moduleSideEffects` value from the hooks | `hook_side_effects: Option<HookSideEffects>` |
+| The sourcemaps of `load` and of each `transform` | `sourcemap_chain: Vec<SourcemapChainElement>` |
+| Whether Rolldown read the file from disk | `is_read_from_disk` in [`load_source`][load_source]. Rolldown reads it again in [Side effects](#side-effects). |
+
+**Resolve results.** They replace `resolveId`, once for each import. The
+result of `resolveId` is a [`ResolvedId`][resolved_id]. Rolldown saves these
+fields for each import:
+
+| Saved | Field |
+| --- | --- |
+| The resolved module id | `id` |
+| The import attributes of the import | `attributes` |
+| Whether it is external | `external`, `is_external_without_side_effects` |
+| The path of its `package.json` | the path of `package_json` |
+| The `moduleSideEffects` value from the hook | `side_effects` |
+| Or: the module was not found | [`ResolveError::NotFound`][not_found] |
+
+The other fields are not saved. Rolldown fills them in again from the saved
+fields:
+
+| Field | Filled in from |
+| --- | --- |
+| `package_json` | The saved path. Rolldown reads the file again. |
+| `module_def_format` | The extension of `id` and the `type` field of `package_json`, with [`infer_module_def_format`][format]. |
+| `normalize_external_id` | Not needed. Only `resolveId` itself reads it. |
+
+**Side effects.** See [Side effects](#side-effects).
+
+Two notes:
+
+- **`package.json`** (`proposed`): only the path is saved. On a restart,
+  Rolldown gives the path to [`try_get_package_json_or_create`][pkg], the same
+  function that `resolveId` uses today. It reads the file once and shares the
+  result across all modules through the resolver's cache. A change to the
+  file's `type` or `sideEffects` then takes effect without a new saved
+  result. The saved path still points at the `package.json` that `resolveId`
+  found last time.
+- **Paths** are saved as absolute paths. M2 is expected to change this,
+  because absolute paths differ between worktrees.
+
+[task]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/module_task.rs#L99
+[load_source]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/module_task.rs#L255
+[resolved_id]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/types/resolved_id.rs#L41
+[not_found]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/resolve_utils.rs#L109
+[format]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/utils/resolve_id_with_plugins.rs#L21
+[pkg]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_resolver/src/resolver.rs#L113
 
 ## Cache validity
 
