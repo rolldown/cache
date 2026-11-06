@@ -203,13 +203,13 @@ cache.
 - **A hook calls `this.load`.** The call runs the whole module task of
   another module and returns its `ModuleInfo`. The hook can use that
   information in its result, so the other module is an input that Rolldown
-  does not track.
+  does not track. See open question 3 in [Open questions](#open-questions).
 - **A hook assigns to `moduleSideEffects` on an object from
   `this.getModuleInfo`.** The assignment is stored on the JavaScript side and
   applied to the other module after the scan
   ([`defer_sync_scan_data`][defer]). When the hook is skipped, the assignment
   is missing. Vite's `vite:build-html` plugin does this in its `transform`
-  hook.
+  hook. See open question 4 in [Open questions](#open-questions).
 
 **No cache with `experimental.nativeMagicString`.** When this option and
 sourcemaps are both on, the sourcemap of a `transform` is
