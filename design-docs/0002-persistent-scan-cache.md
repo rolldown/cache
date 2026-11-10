@@ -335,7 +335,10 @@ above.
 **Inputs that M1 does not track.**
 
 - `resolveId` is skipped, but the files that the resolver reads are not
-  tracked. See item 1 of [Future work](#future-work-2).
+  tracked. The one exception is the tsconfig that governs the importing
+  module. See [Side effects](#side-effects). A file that this tsconfig pulls
+  in with `extends` is not tracked, and neither is a nearer `tsconfig.json`
+  that a user creates later. See item 1 of [Future work](#future-work-2).
 - A user who writes `with { type: ... }` must turn on
   `experimental.importAttributes`. The attributes are then part of the module
   id. Without the option, the module type that the importer asserts is not an
@@ -431,7 +434,7 @@ uses Vite as the example host. The same rules apply to any other host.
 | Input | Provided by | How a change is detected | What a change invalidates | Status |
 | --- | --- | --- | --- | --- |
 | A module file in the graph | Rolldown | The content hash differs from the saved hash | That module | `decided` |
-| A file that a plugin registers with `addWatchFile` ([`transform_dependencies`][td]) | Rolldown | The content hash differs from the saved hash | The modules that registered it | `decided` |
+| A [transform dependency](../glossary.md) of a module ([`transform_dependencies`][td]) | Rolldown | The content hash differs from the saved hash | The modules that depend on it | `decided` |
 | Normalized options ([`NormalizedBundlerOptions`][nbo]) | Rolldown | The [options hash](#options-hash) differs from the saved hash | The whole cache | `proposed` |
 | Cache key | Host | The string differs from the saved string | The whole cache | `proposed` |
 | A [build dependency](../glossary.md) | Host | The content hash differs from the saved hash | The whole cache | `proposed` |
@@ -445,7 +448,7 @@ Seen from one module, its saved result is reused only when all of these hold:
 2. The options hash is the same.
 3. No build dependency changed.
 4. The module file did not change.
-5. No file that the module registered with `addWatchFile` changed.
+5. No transform dependency of the module changed.
 
 If 1, 2, or 3 fails, Rolldown discards the whole cache and runs a full scan.
 If 4 or 5 fails, Rolldown scans that module again and keeps the rest.
@@ -454,7 +457,8 @@ check 4 and 5.
 
 The first two rows of the table follow from the [M1 deliverables][m1].
 `transform_dependencies` lives in memory today and is lost on restart, so it
-must be saved with the cache. See [Serialization](#serialization).
+must be saved with the cache. [Side effects](#side-effects) defines which
+files are transform dependencies.
 
 The Rolldown version is also an input. It is handled with cache format versions
 in [Storage and incremental writes](#storage-and-incremental-writes).
