@@ -479,7 +479,6 @@ experimental: {
     cacheKey?: string,
     buildDependencies?: string[],
     assumeUnchanged?: (string | RegExp)[],
-    assumeCacheableHooks?: { resolveId?: boolean, load?: boolean, transform?: boolean },
   },
 }
 ```
@@ -497,10 +496,6 @@ tracked file on restart when its path matches. The host may set it only when
 module paths are real paths, with symbolic links resolved. See
 [guarantee 3](#what-the-host-must-guarantee). Rolldown ignores it when
 `resolve.symlinks` is `false` and then validates every tracked file.
-
-**`assumeCacheableHooks`** tells Rolldown to treat hooks that do not set
-`cache` as cacheable. It is defined in
-[Which modules get a saved result](#which-modules-get-a-saved-result).
 
 #### What the host must guarantee
 
