@@ -145,7 +145,7 @@ sharing.
 
 Status: `proposed`. Neither Rolldown nor Vite has these options today.
 
-The host passes three values under `experimental.cache`:
+The host passes these values under `experimental.cache`:
 
 ```ts
 experimental: {
@@ -190,9 +190,9 @@ Status: `decided`.
    is linked into `node_modules`, matches a `node_modules` pattern, and
    Rolldown misses changes to it.
 
-Rolldown cannot check these guarantees. When a host sets none of the three
-values, Rolldown treats functions and plugins as unchanged, and the caller is
-responsible for them.
+Rolldown cannot check these guarantees. When a host sets none of `cacheKey`,
+`buildDependencies`, and `assumeUnchanged`, Rolldown treats functions and
+plugins as unchanged, and the caller is responsible for them.
 
 #### Example: Vite
 
