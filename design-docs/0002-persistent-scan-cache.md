@@ -265,12 +265,35 @@ does it again when it reuses the saved result:
 
 | Action in a skipped step | On reuse, Rolldown |
 | --- | --- |
-| A hook calls `this.addWatchFile` | Adds the file to the watched files. From `load` and `transform`, also to the inputs of the module. |
+| A hook calls `this.addWatchFile` | Adds the file to the watched files. From `load` and `transform`, also to the [transform dependencies][td] of the module. |
 | A hook calls `this.emitFile` | Emits the same asset, chunk, or prebuilt chunk with the same arguments. The reference id stays the same, because Rolldown [computes it from the file's content or name][refid]. |
 | A native plugin calls [`associate_module_with_file_ref`][assoc] | Links the module to the emitted file again. The `new URL()` finalizer reads this link. |
 | A hook calls `this.warn`, `this.info`, or `this.debug` | Prints the same log. |
-| Rolldown reads the module file from disk | Adds the file, and the tsconfig that governs it, to the watched files, as [`load_source`][load_source] does today. |
+| Rolldown reads the module file from disk | Adds the file to the watched files, as [`load_source`][load_source] does today. |
+| Rolldown finds the tsconfig that governs the module | Adds the tsconfig to the watched files and to the [transform dependencies][td] of the module. |
 | `resolveId` finds no module | Gives the saved "not found" result to the code in [`resolve_dependencies`][not_found] that runs after resolution. It treats the import as external and prints the warning, as it does today. |
+
+**The tsconfig of a module.** Steps that a restart skips read the tsconfig:
+`resolveId` reads its `paths`, and a `transform` hook can read its compiler
+options. With the cache, no step reads the tsconfig again after a restart, so
+Rolldown must not reuse the saved result when the tsconfig changed.
+
+For example, a tsconfig maps `@/*` to `src/*`, and `a.ts` imports `@/b`. A
+user changes the mapping to `lib/*` while Rolldown is stopped. If the
+tsconfig is not tracked, `@/b` still points to `/proj/src/b.ts` after a
+restart.
+
+So Rolldown makes the tsconfig a [transform dependency](../glossary.md) of
+the module. This changes what Rolldown does today in two ways:
+
+- Today [`load_source`][load_source] looks for the tsconfig only when
+  Rolldown read the module file from disk (`is_read_from_disk`). With this
+  design, Rolldown looks for it for every module.
+- Today Rolldown adds the tsconfig only to the watched files. With this
+  design, it also adds it to the transform dependencies.
+
+Rolldown's own TypeScript and JSX transform also reads the tsconfig. It is
+part of parsing, which runs again on a restart, so it needs no rule.
 
 ### Caveats
 
@@ -357,8 +380,8 @@ above.
    - **Problem:** A hook that calls `this.load` gets no saved result in M1.
      See [Caveats](#caveats).
    - **Possible fix:** Save the call, and make the loaded module an input of
-     the calling module. A change to the loaded module then makes the saved
-     result of the calling module unusable.
+     the calling module. Rolldown then does not reuse the saved result of the
+     calling module when the loaded module changes.
 
 4. **Let a hook that assigns to `moduleSideEffects` get a saved result.**
 
