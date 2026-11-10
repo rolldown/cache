@@ -584,27 +584,45 @@ Vite cannot see every input in guarantee 1. The user covers the rest:
 
 ## Future work
 
-1. **Invalidate only the installed package that changed.** Today a change to
-   an installed package discards the whole cache. Narrowing it needs three
-   things:
+1. **Track the files that the resolver reads or looks for.**
 
-   1. The cache uses the package name and version as the key for the modules
-      of a package.
-   2. The incremental build revokes the old package and resolves the import
-      again from the importer. Rolldown must then record, on each import
-      record, the paths that the resolver read or found missing.
-   3. The watcher and Restart Validation check whether the file behind a
-      symbolic link changed, not only the link path. With pnpm,
-      `node_modules/react` keeps its path but points to another version after
-      an update.
+   - **Problem:** The result of `resolveId` depends on files that Rolldown
+     does not track: the files that the resolver read, and the paths that it
+     looked for and did not find. For example:
+     - `./b` resolves to `b/index.ts`. Later a user creates `b.ts`, which
+       takes over the import.
+     - A user creates a `tsconfig.json` that is nearer to the importing
+       module, or changes a file that a tsconfig pulls in with `extends`.
 
-   Today Rolldown [watches only the real path][watch] that an import resolved
-   to. So it does not build an updated dependency correctly after
-   `pnpm update`, and it does not resolve the importer again when a user file
-   moves or a new file takes over an import. This defect is already in
-   Rolldown's incremental build. A restart repairs it today, because a restart
-   runs a full scan. With the cache, a restart reuses the saved result, so it
-   no longer repairs it.
+     Rolldown's incremental build has this defect today. A restart repairs
+     it, because a restart runs a full scan. With the cache, a restart reuses
+     the saved result, so it no longer repairs it.
+   - **Possible fix:** Record, for each import, the paths that the resolver
+     read and the paths that it found missing. Make them inputs of the saved
+     result of the importing module. Restart Validation already saves whether
+     a tracked file exists.
+
+2. **Invalidate only the installed package that changed.**
+
+   - **Problem:** A change to one installed package discards the whole
+     cache. The reason is how a host covers `node_modules`. For example,
+     Vite passes the file that records the state of the installed packages,
+     such as pnpm's `node_modules/.pnpm/lock.yaml`, as a
+     [build dependency](../glossary.md). When a package is installed,
+     updated, or removed, that file changes, and a changed build dependency
+     discards the whole cache. See [Example: Vite](#example-vite).
+   - **Possible fix:** Narrowing it needs three things:
+
+     1. The cache uses the package name and version as the key for the
+        modules of a package.
+     2. The incremental build revokes the old package and resolves the
+        import again from the importer. This needs item 1.
+     3. The watcher and Restart Validation check whether the file behind a
+        symbolic link changed, not only the link path. With pnpm,
+        `node_modules/react` keeps its path but points to another version
+        after an update. Today Rolldown [watches only the real path][watch]
+        that an import resolved to, so it does not build an updated
+        dependency correctly after `pnpm update`.
 
 [watch]: https://github.com/rolldown/rolldown/blob/41f7dd782/internal-docs/dev-engine/implementation.md
 
