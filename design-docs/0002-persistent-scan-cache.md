@@ -65,7 +65,7 @@ change its decisions, following the rules in
 
 ### Keys
 
-Status: `decided`. The rule for `assumeUnchanged` paths is `proposed`.
+Status: `decided`.
 
 Rolldown finds the saved result of a module with two keys. Each key is a hash
 of inputs. A saved result is only added, never changed. When an input
@@ -139,7 +139,7 @@ After step 3, key 1 holds two lists:
 
 #### Files under `assumeUnchanged` paths
 
-Status: `proposed`.
+Status: `decided`.
 
 Rolldown skips the hash of a file whose path matches
 [`assumeUnchanged`](#host-inputs):
@@ -162,6 +162,100 @@ For example, `assumeUnchanged` is `**/node_modules/**`:
 
 ### What is stored under the keys
 
+Status: `decided`.
+
+Under key 1 and key 2, Rolldown stores one saved result.
+[Serialization](#serialization) defines its parts:
+
+| Part | Defined in |
+| --- | --- |
+| The state after `transform` | [What a saved result holds](#what-a-saved-result-holds) |
+| The resolve result of each import | [What a saved result holds](#what-a-saved-result-holds) |
+| The side effects that Rolldown does again | [Side effects](#side-effects) |
+
+This section adds how two of them are stored.
+
+**Resolve results.** After a restart, Rolldown parses the code again and
+finds the imports. For each import it takes the resolve result from the saved
+result. So the saved result holds the resolve results as a map from a key to
+a resolve result. The key is made of three values of the import, taken
+together:
+
+| Part of the key | Example | Why it is part of the key |
+| --- | --- | --- |
+| The specifier | `./b` | It names the module that the import asks for. |
+| The import kind | `import` | Rolldown [picks the resolver by the import kind][resolver-kind], so `import` and `require` of the same specifier can give different results. |
+| The import attributes | none | With `experimental.importAttributes` on, they are part of the module id of the result. |
+
+Two imports with the same three values have the same key and share one
+resolve result. Rolldown [uses the same three values today][dedup] to resolve
+the same import only once. Rolldown looks a result up by its key. It does not
+search a list.
+
+The form of the key on disk is left to the implementation. Two possible
+forms:
+
+- The three values themselves.
+- One hash of the three values. The hash must be wide enough that two imports
+  of one module do not give the same value.
+
+**Watched files that are not transform dependencies.** A hook other than
+`load` and `transform`, such as `resolveId`, can call `this.addWatchFile`.
+Rolldown then [only watches the file][native-watch]. The saved result holds
+these paths, and Rolldown watches the files again when it reuses the result.
+They are not in a dependency list and not part of key 2. In a rebuild, a
+change to such a file does not make Rolldown resolve the import again
+either: the dev engine [scans only the changed paths][partial], and the HMR
+stage [takes only the modules][hmr-affected] that have the file as a
+transform dependency.
+
+An example. `a.ts` imports `./b`. A plugin named `theme` transforms `a.ts`,
+registers `/proj/theme.json`, emits `theme.css`, and prints a warning. The
+field names and the JSON form are for reading only. They are not the format
+on disk.
+
+```json
+{
+  "7c1e": {
+    "dependencyLists": [
+      ["/proj/theme.json", "/proj/tsconfig.json"]
+    ],
+    "savedResults": {
+      "d41a": {
+        "afterTransform": {
+          "code": "import { b } from \"./b\"; export const color = \"red\";",
+          "moduleType": "ts",
+          "moduleSideEffects": null,
+          "sourcemapChain": [{ "transform": { "plugin": 3, "map": "..." } }],
+          "readFromDisk": true
+        },
+        "resolved": {
+          "./b | import | {}": {
+            "id": "/proj/src/b.ts",
+            "external": false,
+            "isExternalWithoutSideEffects": false,
+            "packageJsonPath": "/proj/package.json",
+            "moduleSideEffects": null
+          }
+        },
+        "sideEffects": {
+          "watchFiles": [],
+          "emittedFiles": [
+            { "type": "asset", "name": "theme.css", "source": ":root{--c:red}" }
+          ],
+          "moduleToFileRef": [],
+          "logs": [
+            { "level": "warn", "plugin": "theme", "message": "theme.json uses a deprecated field" }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+`7c1e` is key 1 and `d41a` is key 2.
+
 ### Layout on disk
 
 ### Writing saved results
@@ -173,6 +267,11 @@ For example, `assumeUnchanged` is `**/node_modules/**`:
 ### Open questions
 
 ### Future work
+
+[dedup]: https://github.com/rolldown/rolldown/blob/67e2203c4/crates/rolldown/src/module_loader/resolve_utils.rs#L67-L71
+[resolver-kind]: https://github.com/rolldown/rolldown/blob/67e2203c4/crates/rolldown_resolver/src/resolver.rs#L150-L156
+[partial]: https://github.com/rolldown/rolldown/blob/67e2203c4/crates/rolldown_dev/src/bundling_task.rs#L372-L378
+[hmr-affected]: https://github.com/rolldown/rolldown/blob/67e2203c4/crates/rolldown/src/hmr/hmr_stage.rs#L143-L164
 
 ## Serialization
 
