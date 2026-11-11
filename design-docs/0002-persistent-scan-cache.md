@@ -265,7 +265,7 @@ does it again when it reuses the saved result:
 
 | Action in a skipped step | On reuse, Rolldown |
 | --- | --- |
-| A hook calls `this.addWatchFile` | Adds the file to the watched files. From `load` and `transform`, also to the [transform dependencies][td] of the module. |
+| A hook calls `this.addWatchFile` | Adds the file to the watched files. From `load` and `transform`, also to the [transform dependencies][td] of the module. A native plugin must make the call on the `load` or `transform` context for this. A call on the plain [`PluginContext`][native-watch] adds the file only to the watched files, as in the `import.meta.glob` case in [Caveats](#caveats). |
 | A hook calls `this.emitFile` | Emits the same asset, chunk, or prebuilt chunk with the same arguments. The reference id stays the same, because Rolldown [computes it from the file's content or name][refid]. |
 | A native plugin calls [`associate_module_with_file_ref`][assoc] | Links the module to the emitted file again. The `new URL()` finalizer reads this link. |
 | A hook calls `this.warn`, `this.info`, or `this.debug` | Prints the same log. |
@@ -339,6 +339,22 @@ above.
   module. See [Side effects](#side-effects). A file that this tsconfig pulls
   in with `extends` is not tracked, and neither is a nearer `tsconfig.json`
   that a user creates later. See item 1 of [Future work](#future-work-2).
+- The result of a hook can depend on which files exist in a directory. The
+  hook can register the directory with `this.addWatchFile`, but Restart
+  Validation covers files only. How a directory is validated after a restart
+  is not decided. See [Future work](0001-restart-validation.md#future-work)
+  in Restart Validation.
+
+  For example, `main.js` has `import.meta.glob('./pages/*.js')`, and the
+  `transform` hook that expands it has the cache on. A user creates
+  `pages/c.js` while Rolldown is stopped. After a restart, Rolldown reuses
+  the saved result of `main.js`, so the object that the glob returns has no
+  entry for `c.js`.
+
+  Today the glob plugin [adds `pages/`][glob-watch] only to the watched
+  files, not to the transform dependencies of `main.js`. So Rolldown has no
+  record that `main.js` depends on `pages/`. See
+  [rolldown/cache#14](https://github.com/rolldown/cache/issues/14).
 - A user who writes `with { type: ... }` must turn on
   `experimental.importAttributes`. The attributes are then part of the module
   id. Without the option, the module type that the importer asserts is not an
@@ -414,6 +430,8 @@ above.
 [optmap]: https://github.com/rolldown/rolldown/blob/2842dcd7c/packages/rolldown/src/plugin/plugin-context-data.ts#L47
 [defer]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/deferred_scan_data.rs#L10
 [magic]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/stages/scan_stage.rs#L241
+[glob-watch]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin_vite_import_glob/src/utils.rs#L675-L682
+[native-watch]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/plugin_context/native_plugin_context.rs#L220
 
 ## Cache validity
 
