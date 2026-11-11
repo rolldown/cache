@@ -73,10 +73,11 @@ This still relies on a sufficient precision estimate and does not detect content
 
 1. How should we handle a file changing between a plugin reading it and Rolldown hashing it? We defer this edge case for now.
 2. The hash algorithm, validation timing, and whether to track file metadata remain open.
-3. Should we add an `mtime` + `safeTime` optimization to avoid hashing files when timestamp checks pass?
 
 ## Future work
 
+- Directories. `this.addWatchFile` accepts a directory, and the file watcher watches everything below it. This design covers files only. How a directory is validated after a restart is not decided. See [rolldown/cache#14](https://github.com/rolldown/cache/issues/14) for the related `import.meta.glob` case.
+- A timestamp check that skips hashing when `mtime` and `size` match, with webpack's `safeTime` rule for timestamp precision. It must be opt-in, because some writes keep the old `mtime` (verification case 5). Turning it on by default needs a way to show why a file or module was reused or not, for example a `cache inspect` command.
 - Platform-specific optimizations, such as using a saved FSEvents event ID on macOS to query changes since the previous run. This needs a fallback for when event history is unavailable or incomplete.
 
 ## Verification
