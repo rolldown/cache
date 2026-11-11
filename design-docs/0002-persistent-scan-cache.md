@@ -350,6 +350,32 @@ use the persistent cache in this mode.
 [Future work](#future-work) lists a possible fix for each of the limits
 above.
 
+**Modules whose id is not a file.** In M1, a module gets a saved result only
+when its id is the absolute path of a file that exists. Rolldown does not
+parse the id. It takes the [raw id][raw-id], which is the id without its
+import attributes, and the path that Rolldown reads the module file from. It
+first checks that the raw id is an absolute path. Only then does it check
+whether a file exists at that path, so an id that is not a path costs no
+file system call. These modules get no saved result:
+
+| Module id | Example |
+| --- | --- |
+| A virtual id, which starts with `\0` | `\0virtual:foo`, and Rolldown's own runtime module `\0rolldown/runtime.js` |
+| An id that is not an absolute path | `virtual:foo` |
+| A path with no file at it | `/proj/Foo.vue?vue&type=style` |
+
+Two things are not settled for these modules:
+
+- **A path with a query.** The module `/proj/Foo.vue?vue&type=style` is made
+  from the file `/proj/Foo.vue`. How such a module depends on that file is
+  not decided. See
+  [rolldown/rolldown#10962](https://github.com/rolldown/rolldown/issues/10962).
+- **A virtual module.** Its hooks can read files. A file that a hook reads
+  becomes a [transform dependency](../glossary.md) only when the hook
+  registers it with `this.addWatchFile`. Today a call from the `transform`
+  hook of a module whose id starts with `\0` [does nothing][virtual-skip]. A
+  call from its `load` hook works.
+
 **Inputs that M1 does not track.**
 
 - `resolveId` is skipped, but the files that the resolver reads are not
@@ -449,6 +475,8 @@ above.
 [magic]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/stages/scan_stage.rs#L241
 [glob-watch]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin_vite_import_glob/src/utils.rs#L675-L682
 [native-watch]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/plugin_context/native_plugin_context.rs#L220
+[virtual-skip]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/plugin_context/transform_plugin_context.rs#L70-L75
+[raw-id]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/types/module_id.rs#L105-L108
 
 ## Cache validity
 
