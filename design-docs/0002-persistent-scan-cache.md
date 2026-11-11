@@ -251,6 +251,16 @@ Notes:
   module that is not external, so they are not an input of its saved result.
   An external module keeps its attributes in both cases, because the output
   prints them.
+- **Asserted module type:** an import can assert the module type of the
+  module that it points to. Today one case does this:
+  `new URL('./x.png', import.meta.url)` [asserts `Asset`][asserted] when
+  `experimental.resolveNewUrlToAsset` is on. A `with { type: ... }` clause
+  does not set it.
+
+  The asserted type affects `load` and `transform`: the `load` hook receives
+  it, and Rolldown [uses it as the module type][asserted-load] when no `load`
+  hook returns one. It is not part of the module id, so it is a separate
+  input of the saved result.
 - **`package.json`** (`proposed`): only the path is saved. On a restart,
   Rolldown gives the path to [`try_get_package_json_or_create`][pkg], the same
   function that `resolveId` uses today. It reads the file once and shares the
@@ -427,6 +437,8 @@ above.
 [load_source]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/module_task.rs#L255
 [resolved_id]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/types/resolved_id.rs#L41
 [attrs]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/types/resolved_id.rs#L58
+[asserted]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/ast_scanner/new_url.rs#L69
+[asserted-load]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/utils/load_source.rs#L50
 [not_found]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/resolve_utils.rs#L109
 [format]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/utils/resolve_id_with_plugins.rs#L21
 [pkg]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_resolver/src/resolver.rs#L113
