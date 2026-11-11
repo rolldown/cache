@@ -63,6 +63,117 @@ change its decisions, following the rules in
 
 ## Storage and incremental writes
 
+### Keys
+
+Status: `decided`. The rule for `assumeUnchanged` paths is `proposed`.
+
+Rolldown finds the saved result of a module with two keys. Each key is a hash
+of inputs. A saved result is only added, never changed. When an input
+changes, a key changes, and Rolldown does not find the old saved result.
+
+```mermaid
+flowchart LR
+    I[Inputs known before the hooks run] --> K1[key 1]
+    K1 --> L[Dependency lists]
+    L --> K2[key 2]
+    K1 --> S[Saved result]
+    K2 --> S
+```
+
+**Key 1** is a hash of these inputs. Rolldown knows all of them before it
+runs a hook of the module.
+
+| Input | Notes |
+| --- | --- |
+| The cache key | Rolldown puts its own version in front of the `cacheKey` that the host passes. See [Host inputs](#host-inputs). |
+| The options hash | See [Options hash](#options-hash). |
+| The content hash of each build dependency | See [Host inputs](#host-inputs). |
+| The module id | With `experimental.importAttributes` on, it holds the import attributes. |
+| The asserted module type | See the note in [What a saved result holds](#what-a-saved-result-holds). |
+| The content hash of the module file | Left out when the path of the file matches `assumeUnchanged`. See [Files under `assumeUnchanged` paths](#files-under-assumeunchanged-paths). |
+
+**Dependency lists.** Under key 1, Rolldown saves the paths of the
+[transform dependencies](../glossary.md) of the module as one list. It saves
+paths only. The state of each file is not saved in the list. It is part of
+key 2. A module usually has one list. The list is a result of the hooks, so
+two builds with the same key 1 can give different lists. Rolldown then adds
+the new list and keeps the old one.
+
+**Key 2** is a hash of one dependency list: each path in the list, and the
+current state of the file at that path. The state is "missing" or the content
+hash of the file, as in [Restart Validation](0001-restart-validation.md).
+Rolldown hashes each file once per restart, also when several lists or
+several modules hold its path.
+
+**Lookup.** For a module, Rolldown computes key 1 and reads its dependency
+lists, newest first. For each list it computes key 2 and looks for a saved
+result under key 1 and key 2. It uses the first one it finds. If it finds
+none, it runs the hooks and saves a new result.
+
+For example, `a.ts` does not change, so key 1 stays the same. Its `transform`
+hook reads `theme.json`.
+
+1. **First build.** `theme.json` is `{ "extends": "./base.json" }`. The hook
+   registers `theme.json` and `base.json`. Rolldown saves list 1, which holds
+   these two paths and the tsconfig of `a.ts`. It saves the result under
+   key 2 `d41a`.
+2. **A user changes `theme.json`** to `{ "color": "red" }` while Rolldown is
+   stopped.
+3. **Restart.** Rolldown reads list 1 and computes key 2 from the files as
+   they are now. `theme.json` changed, so key 2 is not `d41a`, and Rolldown
+   finds no saved result. It runs the hooks. This time the hook registers
+   only `theme.json`. Rolldown saves list 2, which holds `theme.json` and the
+   tsconfig. It saves the new result under key 2 `88f0`.
+4. **Next restart, no change.** Rolldown tries list 2 first. It gives `88f0`,
+   and Rolldown uses that saved result.
+5. **The user changes `theme.json` back.** List 2 gives a key 2 with no saved
+   result. List 1 gives `d41a`, and Rolldown uses the result of the first
+   build.
+
+After step 3, key 1 holds two lists:
+
+| List | Saved in | Paths | key 2 of its saved result |
+| --- | --- | --- | --- |
+| List 1 | Step 1 | `theme.json`, `base.json`, the tsconfig | `d41a` |
+| List 2 | Step 3 | `theme.json`, the tsconfig | `88f0` |
+
+#### Files under `assumeUnchanged` paths
+
+Status: `proposed`.
+
+Rolldown skips the hash of a file whose path matches
+[`assumeUnchanged`](#host-inputs):
+
+- For a module file that matches, key 1 holds no content hash of the file.
+- For a path in a dependency list that matches, key 2 holds the path only.
+
+Rolldown decides this for each file by its own path. A build dependency is
+always hashed, also when its path matches.
+
+For example, `assumeUnchanged` is `**/node_modules/**`:
+
+| File | Role | Matches | Rolldown |
+| --- | --- | --- | --- |
+| `/proj/node_modules/react/index.js` | Module file | Yes | Leaves its content hash out of key 1 |
+| `/proj/src/a.ts` | Module file | No | Puts its content hash into key 1 |
+| `/proj/node_modules/theme-pkg/theme.json` | Transform dependency of `a.ts` | Yes | Puts only the path into key 2 |
+| `/proj/theme.json` | Transform dependency of `react/index.js` | No | Puts the path and the state into key 2 |
+| `/proj/node_modules/.pnpm/lock.yaml` | Build dependency | Yes | Hashes it. The hash is part of key 1 of every module. |
+
+### What is stored under the keys
+
+### Layout on disk
+
+### Writing saved results
+
+### Damaged data and versions
+
+### Removing saved results
+
+### Open questions
+
+### Future work
+
 ## Serialization
 
 This section defines what Rolldown saves for each module.
@@ -347,7 +458,7 @@ sourcemaps are both on, the sourcemap of a `transform` is
 module task. A result saved during the task would miss it. Rolldown does not
 use the persistent cache in this mode.
 
-[Future work](#future-work) lists a possible fix for each of the limits
+[Future work](#future-work-1) lists a possible fix for each of the limits
 above.
 
 **Modules whose id is not a file.** In M1, a module gets a saved result only
@@ -382,7 +493,7 @@ Two things are not settled for these modules:
   tracked. The one exception is the tsconfig that governs the importing
   module. See [Side effects](#side-effects). A file that this tsconfig pulls
   in with `extends` is not tracked, and neither is a nearer `tsconfig.json`
-  that a user creates later. See item 1 of [Future work](#future-work-2).
+  that a user creates later. See item 1 of [Future work](#future-work-3).
 - The result of a hook can depend on which files exist in a directory. The
   hook can register the directory with `this.addWatchFile`, but Restart
   Validation covers files only. How a directory is validated after a restart
@@ -551,7 +662,7 @@ Rules:
 
 M1 hashes all serializable options, including options that only affect later
 stages, such as output file names. Changing one of those discards the cache
-without need. This is safe but wasteful. See [Future work](#future-work-1).
+without need. This is safe but wasteful. See [Future work](#future-work-2).
 
 M2 is expected to change this rule. Options such as `cwd` hold absolute paths,
 which differ between worktrees, so hashing them as they are would prevent
