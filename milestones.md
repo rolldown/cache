@@ -42,7 +42,7 @@ steps, or incremental computation in later build stages.
   track the inputs needed to validate cached results after restarts, including
   changes made while Rolldown was stopped. Handle required side effects when
   cached computations are reused or invalidated, within the existing scan-stage
-  incremental scope.
+  incremental scope. Design: [Restart Validation](design-docs/0001-restart-validation.md).
 
 ## M2: Shared scan cache
 
