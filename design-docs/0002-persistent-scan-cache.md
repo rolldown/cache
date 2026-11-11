@@ -241,8 +241,16 @@ fields:
 
 **Side effects.** See [Side effects](#side-effects).
 
-Two notes:
+Notes:
 
+- **Import attributes:** a `with { ... }` clause affects a module only when
+  `experimental.importAttributes` is on. The attributes are then part of the
+  module id. So `./a.json` with `{ type: 'json' }` and `./a.json` without a
+  clause are two modules, and the saved result of one is never used for the
+  other. With the option off, Rolldown [drops the attributes][attrs] of a
+  module that is not external, so they are not an input of its saved result.
+  An external module keeps its attributes in both cases, because the output
+  prints them.
 - **`package.json`** (`proposed`): only the path is saved. On a restart,
   Rolldown gives the path to [`try_get_package_json_or_create`][pkg], the same
   function that `resolveId` uses today. It reads the file once and shares the
@@ -355,10 +363,6 @@ above.
   files, not to the transform dependencies of `main.js`. So Rolldown has no
   record that `main.js` depends on `pages/`. See
   [rolldown/cache#14](https://github.com/rolldown/cache/issues/14).
-- A user who writes `with { type: ... }` must turn on
-  `experimental.importAttributes`. The attributes are then part of the module
-  id. Without the option, the module type that the importer asserts is not an
-  input of the saved result.
 - A skipped hook can read values that Rolldown does not track, such as the
   result of `this.resolve`, the `ModuleInfo` of another module from
   `this.getModuleInfo`, or a file through `this.fs`. The host covers them. See
@@ -422,6 +426,7 @@ above.
 [css-styles]: https://github.com/vitejs/vite/blob/a976df388/packages/vite/src/node/plugins/css.ts#L646
 [load_source]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/module_task.rs#L255
 [resolved_id]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/types/resolved_id.rs#L41
+[attrs]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/types/resolved_id.rs#L58
 [not_found]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/resolve_utils.rs#L109
 [format]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/utils/resolve_id_with_plugins.rs#L21
 [pkg]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_resolver/src/resolver.rs#L113
