@@ -1057,16 +1057,17 @@ plugins as unchanged, and the caller is responsible for them.
 
 #### Example: Vite
 
-Status: `proposed`. This is one way for a host to meet the guarantees. Other
-hosts may do it in another way.
+Status: `proposed`. This is one way for a host to meet the guarantees. It
+does not meet guarantee 2 in one case, which is described below. Other hosts
+may do it in another way.
 
 | Vite passes | What it covers |
 | --- | --- |
 | `dir`: a directory under Vite's `cacheDir` | Nothing. It tells Rolldown where to keep the cache data. |
 | `buildDependencies`: the config file, the files it imports, and the files in the user's `experimental.cache.buildDependencies` | A change to the content of these files, including the source of functions in the config |
 | `buildDependencies`: the file that records the state of the installed packages, such as their versions, for example pnpm's `node_modules/.pnpm/lock.yaml` | A change to a package that the config file imports.<br>A change to a package that the user's code imports. |
-| `cacheKey`: a hash of the normalized config, the Vite version, and the user's `experimental.cache.cacheKey` | A change to a normalized config value while the config file and the files it imports stay the same. CLI flags, inline config, mode, and environment variables that the config reads can cause such a change. |
-| `assumeUnchanged`: `**/node_modules/**` | Nothing. It is an optimization: Rolldown does not hash the files under `node_modules` one by one. This is safe because the file that records the state of the installed packages is a build dependency. When a package is installed, updated, or removed, that file changes, and every module is a miss. |
+| `cacheKey`: a hash of the normalized config, the environment name, `process.env.NODE_ENV`, the Vite version, and the user's `experimental.cache.cacheKey` | A change to a normalized config value while the config file and the files it imports stay the same. CLI flags, inline config, mode, and environment variables that the config reads can cause such a change. |
+| `assumeUnchanged`: `**/node_modules/**` | Nothing. It is an optimization: Rolldown does not hash the files under `node_modules` one by one. It is safe when a package is installed, updated, or removed: the file that records the state of the installed packages is a build dependency, and it changes, so every module is a miss. It is not safe when a tool writes files into `node_modules` without installing a package. See below. |
 
 In Vite's own config, a user can set `experimental.cache` to `true`. Vite
 then builds the complete object that it passes to Rolldown.
@@ -1075,18 +1076,21 @@ Vite hashes the normalized config with the same rules as the
 [options hash](#options-hash), so functions are skipped. To detect a change to
 a function, Vite lists the config file that holds it as a build dependency.
 
-Vite sets `assumeUnchanged` only when it finds a file that records the state of
-the installed packages, and `resolve.preserveSymlinks` is `false`. When a tool
-writes files into `node_modules` without installing a package, Vite does not
-meet guarantee 2. See
+Vite turns the cache on only when it finds a file that records the state of
+the installed packages. See [Vite](../meta-frameworks/vite.md#caveats). Vite
+sets `assumeUnchanged` unless `resolve.preserveSymlinks` is `true`.
+
+When a tool writes files into `node_modules` without installing a package,
+Vite does not meet guarantee 2. See
 [Vite](../meta-frameworks/vite.md#files-that-cover-the-installed-packages).
 
 Vite cannot see every input in guarantee 1. The user covers the rest:
 
 - For a value that a function or a plugin hook reads when it runs, such as
   `process.env.THEME` inside a `transform` hook, the user puts it into
-  `experimental.cache.cacheKey`. `process.env.NODE_ENV` and the variables with
-  the `VITE_` prefix need no action, because they are part of the normalized
+  `experimental.cache.cacheKey`. `process.env.NODE_ENV` needs no action,
+  because Vite puts it into the cache key itself. The variables with the
+  `VITE_` prefix need no action, because they are part of the normalized
   config.
 - For a file that the config reads without importing it, such as with
   `fs.readFileSync`, the user adds it to `experimental.cache.buildDependencies`.
