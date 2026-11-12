@@ -14,6 +14,7 @@ Rolldown.
 | [`glossary.md`](glossary.md) | Terms used in cache discussions and designs. |
 | [`design-docs/`](design-docs/)   | One record per feature or decision: what and why.                                 |
 | [`milestones.md`](milestones.md) | The order of work, the features in each milestone, and their status.              |
+| [`meta-frameworks/`](meta-frameworks/) | How each meta-framework works with the cache, for example which of its plugin hooks have the cache on, and why. |
 
 ## Goals and principles
 
