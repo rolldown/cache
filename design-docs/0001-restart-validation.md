@@ -25,22 +25,24 @@ transform(code, id) {
 If `theme.json` changes while Rolldown is stopped, the saved result may be stale
 even though `a.ts` has not changed.
 
-Given tracked files and their saved validation information, Restart Validation
-detects differences from the cached baseline.
+Restart Validation is how Rolldown detects such a change.
 
 ## Proposed approach
 
 Use content hashes to detect file changes across restarts.
 
-For each tracked file, save whether it exists and its content hash if it does.
+The state of a tracked file is one of two values:
 
-On restart, validate tracked files before reusing cached results:
+- "missing", if no file exists at the path;
+- the content hash of the file, if it exists.
 
-- If the file was created or deleted, report it as changed.
-- If it exists, read its contents and compare the hash with the saved hash.
-- If the hashes differ, report it as changed. Otherwise, report it as unchanged.
+Rolldown reads the file to get its state. Check each file once, even if
+multiple modules depend on it.
 
-Check each file once, even if multiple modules depend on it. Return the changed file paths to the caller.
+The persistent scan cache uses the state as an input of its keys. See
+[Keys](0002-persistent-scan-cache.md#keys). A file that was created, deleted,
+or changed has another state. The key then changes, and the saved result is a
+cache miss. Rolldown saves no state to compare it later.
 
 ## Research: bundlers and task executors
 
@@ -82,13 +84,13 @@ This still relies on a sufficient precision estimate and does not detect content
 
 ## Verification
 
-1. Unchanged inputs: Save a cache and restart without editing any tracked files. Expect no changed paths.
-2. Changed contents: Edit `a.ts` or its registered dependency `theme.json` while stopped. Expect the edited path to be reported as changed.
-3. Deleted files: Delete a tracked `theme.json` while stopped. Expect its path to be reported as changed.
-4. Previously missing files: Build `a.ts` with `theme.json` registered as a dependency but missing. Create `theme.json` while stopped, then restart. Expect its path to be reported as changed and `a.ts` to be rebuilt.
-5. Preserved `mtime`: Change `theme.json` contents, restore its original `mtime`, and restart. Expect its path to be reported as changed.
-6. Shared files: Register `theme.json` as a dependency of both `a.ts` and `b.ts`. Expect validation to check it once and report its path once if changed.
-7. Changes during the build: Change `theme.json` after the plugin reads it but before Rolldown hashes it, for example from a test plugin hook that rewrites the file after reading it. Restart without further edits. The saved hash already matches the new contents, so a hash comparison alone reports no change. Use this case to verify the policy for open question 1 once it is defined. A build using the saved cache must not reuse the result made from the old contents.
+1. Unchanged inputs: Save a cache and restart without editing any tracked files. Expect a cache hit for every saved result.
+2. Changed contents: Edit `a.ts` or its registered dependency `theme.json` while stopped. Expect a cache miss for `a.ts`.
+3. Deleted files: Delete a tracked `theme.json` while stopped. Expect a cache miss for `a.ts`.
+4. Previously missing files: Build `a.ts` with `theme.json` registered as a dependency but missing. Create `theme.json` while stopped, then restart. Expect a cache miss for `a.ts`.
+5. Preserved `mtime`: Change `theme.json` contents, restore its original `mtime`, and restart. Expect a cache miss for `a.ts`.
+6. Shared files: Register `theme.json` as a dependency of both `a.ts` and `b.ts`. Change it while stopped. Expect that Rolldown reads it once, and a cache miss for both `a.ts` and `b.ts`.
+7. Changes during the build: Change `theme.json` after the plugin reads it but before Rolldown hashes it, for example from a test plugin hook that rewrites the file after reading it. Restart without further edits. The key of the saved result already holds the hash of the new contents, so the lookup alone gives a cache hit. Use this case to verify the policy for open question 1 once it is defined. A build using the saved cache must not reuse the result made from the old contents.
 8. Build correctness: After editing `theme.json`, compare the output of a build using the saved cache with a clean build using the same inputs. Expect matching output.
 9. Performance: Measure restart builds with no edits and with one edited file. Include validation, restoration, and cache-update costs, and compare total time with a build without saved cache.
 

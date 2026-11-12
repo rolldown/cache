@@ -28,6 +28,8 @@ the results of the plugin hooks for each module. The first scan after a
 restart is still a full scan. For a module whose inputs did not change, it
 reuses these results and does not run the hooks again.
 [Serialization](#serialization) defines what is saved.
+[When the cache is used](#when-the-cache-is-used) defines every case in which
+Rolldown reads and writes the cache.
 
 [cache]: https://github.com/rolldown/rolldown/blob/41f7dd782/crates/rolldown/src/types/scan_stage_cache.rs#L23
 [merge]: https://github.com/rolldown/rolldown/blob/41f7dd782/crates/rolldown/src/types/scan_stage_cache.rs#L123
@@ -42,7 +44,7 @@ In scope:
 - Changes made while Rolldown was stopped. Detecting them is defined in
   [Restart Validation](0001-restart-validation.md).
 - Saving a module's scan result in a reduced form, such as its transform
-  output. A saved result is still reused or invalidated per module.
+  output. Reuse is still decided per module.
 
 Out of scope:
 
@@ -92,6 +94,18 @@ runs a hook of the module.
 | The asserted module type | See the note in [What a saved result holds](#what-a-saved-result-holds). |
 | The content hash of the module file | Left out when the path of the file matches `assumeUnchanged`. See [Files under `assumeUnchanged` paths](#files-under-assumeunchanged-paths). |
 
+**Why the Rolldown version is in the cache key.** A new version of Rolldown
+can change the result of a module while every other input of key 1 stays the
+same. For example, a new version changes the `transform` hook of a built-in
+Rust plugin. Rolldown has no way to track such a change. So each Rolldown
+version gets its own key 1, and a saved result from another version is not
+found.
+
+Later, Rolldown is expected to have a cache version: a number that changes
+with every change to Rolldown that affects saved results. The cache version
+then takes the place of the Rolldown version in the cache key, and one cache
+version can serve several Rolldown versions.
+
 **Dependency lists.** Under key 1, Rolldown saves the paths of the
 [transform dependencies](../glossary.md) of the module as one list. It saves
 paths only. The state of each file is not saved in the list. It is part of
@@ -102,13 +116,16 @@ the new list and keeps the old one.
 **Key 2** is a hash of one dependency list: each path in the list, and the
 current state of the file at that path. The state is "missing" or the content
 hash of the file, as in [Restart Validation](0001-restart-validation.md).
-Rolldown hashes each file once per restart, also when several lists or
-several modules hold its path.
 
 **Lookup.** For a module, Rolldown computes key 1 and reads its dependency
 lists, newest first. For each list it computes key 2 and looks for a saved
-result under key 1 and key 2. It uses the first one it finds. If it finds
-none, it runs the hooks and saves a new result.
+result under key 1 and key 2. It uses the first one it finds. This is a cache
+hit. If it finds none, it is a cache miss: Rolldown runs the hooks and saves a
+new result.
+
+Key 1 and key 2 hold absolute paths, for example the module id and the paths
+in a dependency list. M2 is expected to change this, because absolute paths
+differ between worktrees.
 
 For example, `a.ts` does not change, so key 1 stays the same. Its `transform`
 hook reads `theme.json`.
@@ -258,16 +275,129 @@ on disk.
 
 ### Layout on disk
 
+#### The cache directory
+
+Status: `decided`.
+
+The host passes the directory of the cache as `experimental.cache.dir`:
+
+```ts
+experimental: {
+  cache: {
+    dir: '/proj/node_modules/.vite/rolldown-cache',
+  },
+}
+```
+
+Rolldown keeps all cache data in this directory. A relative path is resolved
+against `cwd`. Rolldown has no default directory.
+
+`experimental.cache` also turns the cache on and off:
+
+| `experimental.cache` | Meaning |
+| --- | --- |
+| not set, or `false` | The cache is off. Rolldown reads and writes no cache data. |
+| an object | The cache is on. `dir` is required. |
+
+Rolldown does not accept `true` for now. It has no default directory, so the
+caller must write the complete object. A host can accept `true` in its own
+config and build the object for Rolldown.
+
+This directory is the [local cache](../glossary.md) of one worktree. M2 is
+expected to add a second directory option for the global cache, because the
+worktrees of a project need one directory that all of them can use.
+
+#### Files in the cache directory
+
+Status: `proposed`.
+
+The direction is that one file holds many saved results, as in
+[webpack][webpack-pack] and [Turbopack][turbopack-sst]. A large project has
+tens of thousands of modules, and one file for each saved result would
+create tens of thousands of files.
+
+The implementation decides by benchmark which layout to keep. It can also
+try a layout of Rolldown's own. Any layout must keep the rules of this
+section.
+
+The format of the files, the hash algorithm, and how Rolldown reads the
+files on a restart are left to the implementation too.
+
 ### Writing saved results
+
+#### When the cache is used
+
+Status: `decided`.
+
+**Reading.** When the cache is on, a [module task][task] looks for a saved
+result. If it finds one, it reuses it. If it finds none, it runs the hooks.
+It does not matter how Rolldown is run: a one-time build, watch mode, and dev
+mode follow the same rule.
+
+An incremental build is the one exception. It reuses the scan results that
+Rolldown holds in memory, which is faster than reading the cache. So it does
+not read the cache, and it runs the hooks of the modules that changed.
+
+**Writing.** Rolldown saves a new result whenever the hooks of a module ran.
+An incremental build updates the scan results in memory, as it does today,
+and also saves the new result to the cache. A write is incremental: it adds
+the new results and does not write the whole cache again. When Rolldown
+writes to disk is left to the implementation. So is the way to write while
+Rolldown is idle, so that writing does not block the user.
+
+#### Several bundlers on one cache directory
+
+Status: `decided`.
+
+Several bundlers can use one cache directory at the same time, in one
+process or in several processes. Each of them gets correct results, because
+cache data is only added and never changed. A bundler never changes data
+that another bundler reads.
+
+A bundler can read data that another bundler has not finished writing. That
+data is not complete, so the bundler treats it as not found. See
+[Damaged data and versions](#damaged-data-and-versions).
 
 ### Damaged data and versions
 
+Status: `decided`.
+
+Rolldown uses a saved result only when its data is complete and in a format
+that this version of Rolldown reads. In every other case Rolldown treats the
+saved result as not found: it runs the hooks, and the build continues. The
+cause does not matter: a write that was interrupted, a damaged file, or data
+in another format.
+
+A write that fails does not fail the build either. For example, the disk is
+full, or the cache directory is read-only. The build continues, and the
+result is not saved.
+
+A saved result from another version of Rolldown is not found at all, because
+the Rolldown version is part of key 1. See [Keys](#keys).
+
 ### Removing saved results
 
-### Open questions
+Status: `proposed`.
 
-### Future work
+Cache data is only added, so data that is no longer used stays in the cache
+directory. For example, each change to `a.ts` adds a saved result under a new
+key 1, and a new version of Rolldown adds a new saved result for every
+module.
 
+Rolldown removes cache data that was not used for longer than
+`experimental.cache.maxAge`. Data is used when Rolldown reads it or writes
+it. `maxAge` is a number of milliseconds. When it is not set, Rolldown
+removes nothing.
+
+Removing cache data is always safe. Rolldown treats data that is not there as
+not found. See [Damaged data and versions](#damaged-data-and-versions). So a
+user can also delete the cache directory at any time.
+
+When Rolldown removes data, and how it finds the data to remove, is left to
+the implementation.
+
+[webpack-pack]: https://github.com/webpack/webpack/blob/40023cb37/lib/cache/PackFileCacheStrategy.js
+[turbopack-sst]: https://github.com/vercel/next.js/blob/cfa2956c852b226de09213513196510165def4ea/turbopack/crates/turbo-persistence/README.md
 [dedup]: https://github.com/rolldown/rolldown/blob/67e2203c4/crates/rolldown/src/module_loader/resolve_utils.rs#L67-L71
 [resolver-kind]: https://github.com/rolldown/rolldown/blob/67e2203c4/crates/rolldown_resolver/src/resolver.rs#L150-L156
 [partial]: https://github.com/rolldown/rolldown/blob/67e2203c4/crates/rolldown_dev/src/bundling_task.rs#L372-L378
@@ -371,6 +501,7 @@ set `cache` as if they had `cache: true`:
 ```ts
 experimental: {
   cache: {
+    dir: '...',
     assumeCacheableHooks: { resolveId: false, load: false, transform: false },
   },
 }
@@ -557,7 +688,7 @@ sourcemaps are both on, the sourcemap of a `transform` is
 module task. A result saved during the task would miss it. Rolldown does not
 use the persistent cache in this mode.
 
-[Future work](#future-work-1) lists a possible fix for each of the limits
+[Future work](#future-work) lists a possible fix for each of the limits
 above.
 
 **Modules whose id is not a file.** In M1, a module gets a saved result only
@@ -592,7 +723,7 @@ Two things are not settled for these modules:
   tracked. The one exception is the tsconfig that governs the importing
   module. See [Side effects](#side-effects). A file that this tsconfig pulls
   in with `extends` is not tracked, and neither is a nearer `tsconfig.json`
-  that a user creates later. See item 1 of [Future work](#future-work-3).
+  that a user creates later. See item 1 of [Future work](#future-work-2).
 - The result of a hook can depend on which files exist in a directory. The
   hook can register the directory with `this.addWatchFile`, but Restart
   Validation covers files only. How a directory is validated after a restart
@@ -691,9 +822,9 @@ Two things are not settled for these modules:
 ## Cache validity
 
 A saved scan result is reused only when every input that produced it is
-unchanged. This section defines those inputs, how Rolldown compares them, and
-how much of the cache a change invalidates. How Rolldown detects that a tracked
-file changed is defined in [Restart Validation](0001-restart-validation.md).
+unchanged. This section defines those inputs, and the modules for which a
+change causes a [cache miss](#keys). How Rolldown detects that a tracked file
+changed is defined in [Restart Validation](0001-restart-validation.md).
 
 ### Tracked inputs
 
@@ -704,16 +835,17 @@ host.
 See the glossary for the definition of [host](../glossary.md). This document
 uses Vite as the example host. The same rules apply to any other host.
 
-| Input | Provided by | How a change is detected | What a change invalidates | Status |
+| Input | Provided by | Part of | A change causes a miss for | Status |
 | --- | --- | --- | --- | --- |
-| A module file in the graph | Rolldown | The content hash differs from the saved hash | That module | `decided` |
-| A [transform dependency](../glossary.md) of a module ([`transform_dependencies`][td]) | Rolldown | The content hash differs from the saved hash | The modules that depend on it | `decided` |
-| Normalized options ([`NormalizedBundlerOptions`][nbo]) | Rolldown | The [options hash](#options-hash) differs from the saved hash | The whole cache | `proposed` |
-| Cache key | Host | The string differs from the saved string | The whole cache | `proposed` |
-| A [build dependency](../glossary.md) | Host | The content hash differs from the saved hash | The whole cache | `proposed` |
+| A module file in the graph | Rolldown | Key 1 | That module | `decided` |
+| A [transform dependency](../glossary.md) of a module ([`transform_dependencies`][td]) | Rolldown | Key 2 | The modules that depend on it | `decided` |
+| Normalized options ([`NormalizedBundlerOptions`][nbo]) | Rolldown | Key 1, as the [options hash](#options-hash) | Every module | `proposed` |
+| Cache key | Host, with the Rolldown version in front | Key 1 | Every module | `proposed` |
+| A [build dependency](../glossary.md) | Host | Key 1 | Every module | `proposed` |
 
-File content hashes are compared as defined in
-[Restart Validation](0001-restart-validation.md).
+A change to an input never removes cache data. It only causes a miss. Rolldown
+removes cache data only by `maxAge`. See
+[Removing saved results](#removing-saved-results).
 
 Seen from one module, its saved result is reused only when all of these hold:
 
@@ -723,25 +855,25 @@ Seen from one module, its saved result is reused only when all of these hold:
 4. The module file did not change.
 5. No transform dependency of the module changed.
 
-If 1, 2, or 3 fails, Rolldown discards the whole cache and runs a full scan.
-If 4 or 5 fails, Rolldown scans that module again and keeps the rest.
-For a file under an [`assumeUnchanged`](#host-inputs) path, Rolldown does not
-check 4 and 5.
+If 1, 2, or 3 fails, every module is a miss. If 4 or 5 fails, that module is
+a miss, and the other modules are not affected.
+In 4 and 5, Rolldown treats a file whose path matches
+[`assumeUnchanged`](#host-inputs) as unchanged.
 
 The first two rows of the table follow from the [M1 deliverables][m1].
 `transform_dependencies` lives in memory today and is lost on restart, so it
 must be saved with the cache. [Side effects](#side-effects) defines which
 files are transform dependencies.
 
-The Rolldown version is also an input. It is handled with cache format versions
-in [Storage and incremental writes](#storage-and-incremental-writes).
+The Rolldown version is also an input. It is part of the cache key. See
+[Keys](#keys).
 
 ### Options hash
 
 Status: `proposed`.
 
-Rolldown computes one hash from [`NormalizedBundlerOptions`][nbo] and saves it
-with the cache. On restart it computes the hash again and compares the two.
+Rolldown computes one hash from [`NormalizedBundlerOptions`][nbo]. The hash is
+an input of key 1. See [Keys](#keys).
 
 The hash is taken from the normalized options, not from the options as the user
 wrote them. A change in how Rolldown fills in defaults then also changes the
@@ -749,9 +881,10 @@ hash.
 
 Rules:
 
-- **Values that can be serialized** are hashed. This covers strings, numbers,
-  booleans, lists, and maps, for example `define`, `resolve`, `platform`, and
-  `moduleTypes`.
+- **Values that can be serialized** are hashed, for example strings, numbers,
+  booleans, regular expressions, lists, and maps. Options such as `define`,
+  `resolve`, `platform`, and `moduleTypes` hold such values. A regular
+  expression is hashed by its pattern and its flags.
 - **Functions are skipped.** Examples are an `external` function and a
   `treeshake.moduleSideEffects` function. Rolldown cannot tell whether a
   function behaves the same as before. The host must cover it. See
@@ -760,8 +893,9 @@ Rules:
   code are not hashed. The host must cover them as well.
 
 M1 hashes all serializable options, including options that only affect later
-stages, such as output file names. Changing one of those discards the cache
-without need. This is safe but wasteful. See [Future work](#future-work-2).
+stages, such as output file names. Changing one of those causes a miss for
+every module without need. This is safe but wasteful. See
+[Future work](#future-work-1).
 
 M2 is expected to change this rule. Options such as `cwd` hold absolute paths,
 which differ between worktrees, so hashing them as they are would prevent
@@ -775,7 +909,9 @@ The host passes these values under `experimental.cache`:
 
 ```ts
 experimental: {
-  cache: {
+  cache?: false | {
+    dir: string,
+    maxAge?: number,
     cacheKey?: string,
     buildDependencies?: string[],
     assumeUnchanged?: (string | RegExp)[],
@@ -784,19 +920,32 @@ experimental: {
 }
 ```
 
-**`cacheKey`** is a string. Rolldown saves it with the cache. If the string
-differs on restart, Rolldown discards the whole cache.
+**`dir`** is the directory of the cache. It is required. It is defined in
+[The cache directory](#the-cache-directory).
 
-**`buildDependencies`** is a list of file paths. Rolldown saves the content
-hash of each file. If any of them changed on restart, Rolldown discards the
-whole cache. Rolldown does not follow their imports, so the host must list
-every file.
+**`maxAge`** is the time after which Rolldown removes cache data that was not
+used. It is defined in [Removing saved results](#removing-saved-results).
 
-**`assumeUnchanged`** is a list of path patterns. Rolldown does not validate a
-tracked file on restart when its path matches. The host may set it only when
-module paths are real paths, with symbolic links resolved. See
-[guarantee 3](#what-the-host-must-guarantee). Rolldown ignores it when
-`resolve.symlinks` is `false` and then validates every tracked file.
+**`cacheKey`** is a string. Rolldown puts its own version in front of it, and
+the result is an input of key 1. See [Keys](#keys). If the string changes,
+every module is a miss.
+
+**`buildDependencies`** is a list of file paths. The content hash of each file
+is an input of key 1. If any of them changes, every module is a miss. Rolldown
+does not follow their imports, so the host must list every file.
+
+**`assumeUnchanged`** is a list of path patterns. Rolldown does not hash a
+module file or a transform dependency whose path matches. A build dependency
+is always hashed. See
+[Files under `assumeUnchanged` paths](#files-under-assumeunchanged-paths).
+The host may set it only when module paths are real paths, with symbolic
+links resolved. See [guarantee 3](#what-the-host-must-guarantee). Rolldown
+ignores it when `resolve.symlinks` is `false` and then hashes every file.
+
+A pattern matches a path by the same rule as a [hook filter][pattern-filter].
+A string is a glob. A glob that is not absolute and does not start with `**`
+is joined onto `cwd`. A regular expression is tested against the path with
+forward slashes.
 
 **`assumeCacheableHooks`** tells Rolldown to treat hooks that do not set
 `cache` as cacheable. It is defined in
@@ -811,7 +960,7 @@ Status: `decided`.
    options, the plugin code, and the files and values that they read. For
    example, the host lists the config file and the files it imports as build
    dependencies, so a change to the source of a function in the config
-   discards the cache.
+   causes a miss for every module.
 2. `assumeUnchanged` is safe only because the build dependencies did not
    change. So when a file under an `assumeUnchanged` path changes, a build
    dependency must change too. For example, the host lists
@@ -832,10 +981,14 @@ hosts may do it in another way.
 
 | Vite passes | What it covers |
 | --- | --- |
+| `dir`: a directory under Vite's `cacheDir` | Nothing. It tells Rolldown where to keep the cache data. |
 | `buildDependencies`: the config file, the files it imports, and the files in the user's `experimental.cache.buildDependencies` | A change to the content of these files, including the source of functions in the config |
 | `buildDependencies`: the file that records the state of the installed packages, such as their versions, for example pnpm's `node_modules/.pnpm/lock.yaml` | A change to a package that the config file imports.<br>A change to a package that the user's code imports. |
 | `cacheKey`: a hash of the normalized config, the Vite version, and the user's `experimental.cache.cacheKey` | A change to a normalized config value while the config file and the files it imports stay the same. CLI flags, inline config, mode, and environment variables that the config reads can cause such a change. |
-| `assumeUnchanged`: `node_modules` | Nothing. It is an optimization: Rolldown does not validate the files under `node_modules` one by one. This is safe because the file that records the state of the installed packages is a build dependency. When a package is installed, updated, or removed, that file changes and Rolldown discards the whole cache. |
+| `assumeUnchanged`: `**/node_modules/**` | Nothing. It is an optimization: Rolldown does not hash the files under `node_modules` one by one. This is safe because the file that records the state of the installed packages is a build dependency. When a package is installed, updated, or removed, that file changes, and every module is a miss. |
+
+In Vite's own config, a user can set `experimental.cache` to `true`. Vite
+then builds the complete object that it passes to Rolldown.
 
 Vite hashes the normalized config with the same rules as the
 [options hash](#options-hash), so functions are skipped. To detect a change to
@@ -871,14 +1024,15 @@ Vite cannot see every input in guarantee 1. The user covers the rest:
    late. So the host knows the full list only when the build ends. An option
    that is set at the start cannot hold these files.
 2. **Hash only the options that affect the scan.** Today a change to an option
-   that only affects later stages, such as an output file name, discards the
-   cache. See [Options hash](#options-hash).
+   that only affects later stages, such as an output file name, causes a miss
+   for every module. See [Options hash](#options-hash).
 3. **Let a plugin declare the values it reads when it runs.** M1 does not track
    a value such as `process.env.THEME` that a plugin hook reads. The user must
    put it into the cache key. A plugin could declare such values by name, so
    that Rolldown tracks them. This is part of
    [M3](../milestones.md#m3-incremental-computation-granularity-and-correctness).
 
+[pattern-filter]: https://github.com/rolldown/rolldown/blob/67e2203c4/crates/rolldown_utils/src/pattern_filter.rs#L54-L67
 [td]: https://github.com/rolldown/rolldown/blob/41f7dd782/crates/rolldown_plugin/src/plugin_driver/mod.rs#L44
 [nbo]: https://github.com/rolldown/rolldown/blob/41f7dd782/crates/rolldown_common/src/inner_bundler_options/types/normalized_bundler_options.rs#L44
 
@@ -902,15 +1056,15 @@ Vite cannot see every input in guarantee 1. The user covers the rest:
      result of the importing module. Restart Validation already saves whether
      a tracked file exists.
 
-2. **Invalidate only the installed package that changed.**
+2. **Limit the miss to the installed package that changed.**
 
-   - **Problem:** A change to one installed package discards the whole
-     cache. The reason is how a host covers `node_modules`. For example,
+   - **Problem:** A change to one installed package causes a miss for every
+     module. The reason is how a host covers `node_modules`. For example,
      Vite passes the file that records the state of the installed packages,
      such as pnpm's `node_modules/.pnpm/lock.yaml`, as a
      [build dependency](../glossary.md). When a package is installed,
      updated, or removed, that file changes, and a changed build dependency
-     discards the whole cache. See [Example: Vite](#example-vite).
+     causes a miss for every module. See [Example: Vite](#example-vite).
    - **Possible fix:** Narrowing it needs three things:
 
      1. The cache uses the package name and version as the key for the
@@ -927,3 +1081,35 @@ Vite cannot see every input in guarantee 1. The user covers the rest:
 [watch]: https://github.com/rolldown/rolldown/blob/41f7dd782/internal-docs/dev-engine/implementation.md
 
 ## Verification
+
+These cases extend the [principles](../principles.md).
+
+**Storage and incremental writes.** In every case, the build must complete
+and give the same output and required behavior as a build without the cache
+([principle 1](../principles.md#1-caching-must-preserve-correctness)).
+
+1. Cache off: Do not set `experimental.cache`, or set it to `false`. Expect
+   that Rolldown writes no cache data.
+2. Restart: Build with the cache on and restart without a change. Expect
+   that the hooks of a module with a saved result do not run again.
+3. Incremental build: In dev mode, change `a.ts`, stop Rolldown, and restart.
+   Expect that the hooks of `a.ts` do not run again.
+4. Watch mode: In watch mode, change `a.ts`. Expect that the rebuild runs the
+   hooks of `a.ts` and not the hooks of `b.ts`.
+5. Incremental write: Change one file in a large project. Expect that
+   Rolldown does not write the whole cache again.
+6. Interrupted write: Stop the process while it writes cache data, and
+   restart.
+7. Damaged data: Change or cut off the bytes of a cache file, and restart.
+8. Another version: Write the cache with one version of Rolldown, and start
+   another version. Expect that no saved result of the first version is used.
+9. Failed write: Make the cache directory read-only, and build.
+10. Several bundlers: Run two builds with the same `dir` at the same time.
+11. Removed data: Delete the cache directory, or some of its files, and
+    restart.
+12. `maxAge`: Set `maxAge`, and let some cache data go unused for longer.
+    Expect that Rolldown removes this data and keeps the data that was used.
+13. Performance: On the benchmark projects, measure a restart with the cache
+    and a restart without it. Count the time to check, read, and write the
+    cache. Expect that the restart with the cache is faster
+    ([principle 2](../principles.md#2-caching-must-save-more-work-than-it-adds)).

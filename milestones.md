@@ -33,16 +33,17 @@ transform steps, or incremental computation in later build stages.
   the cache layout, stored data, and incremental write model for the original
   worktree. Cover interrupted writes, damaged data, and version compatibility.
   Note where M2's sharing requirements are expected to change the storage
-  design.
+  design. Design: [Storage and incremental writes](design-docs/0002-persistent-scan-cache.md#storage-and-incremental-writes).
 - [ ] **Serialization and deserialization.** Save and restore the scan data and
   side-effect records needed to continue incremental builds. Choose which scan
   data to save based on performance measurements, while keeping build results
-  correct.
+  correct. Design: [Serialization](design-docs/0002-persistent-scan-cache.md#serialization).
 - [ ] **Scan dependency tracking, invalidation, and side effects.** Define and
   track the inputs needed to validate cached results after restarts, including
   changes made while Rolldown was stopped. Handle required side effects when
   cached computations are reused or invalidated, within the existing scan-stage
-  incremental scope. Design: [Restart Validation](design-docs/0001-restart-validation.md).
+  incremental scope. Design: [Restart Validation](design-docs/0001-restart-validation.md),
+  [Cache validity](design-docs/0002-persistent-scan-cache.md#cache-validity).
 
 ## M2: Shared scan cache
 
