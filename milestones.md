@@ -9,10 +9,10 @@ M1 being able to save and restore the cache correctly.
 
 ## M1: Persistent scan cache
 
-**Goal:** Make Rolldown's existing scan cache reusable after restarting in the
-same worktree, while preserving its module-level incremental behavior. This
-milestone does not introduce independently cached resolve, load, or transform
-steps, or incremental computation in later build stages.
+**Goal:** Reuse scan results after restarting in the same worktree, while
+preserving the module-level incremental behavior of Rolldown's existing scan
+cache. This milestone does not introduce independently cached resolve, load, or
+transform steps, or incremental computation in later build stages.
 
 **Done when:**
 

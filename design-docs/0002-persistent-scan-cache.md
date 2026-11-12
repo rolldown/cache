@@ -19,13 +19,15 @@ the same worktree. A restart then skips the saved scan work for modules whose
 inputs did not change while Rolldown was stopped.
 
 Main decision (`decided`, from the [M1 goal][m1]): keep the existing
-module-level incremental model. Partial scans and the merge path stay as they
-are; the saved data feeds into them.
+module-level incremental model. [`ScanStageCache`][cache], partial scans, and
+the merge path stay as they are. They serve rebuilds inside one process and
+are not saved.
 
-Which scan data is saved is `open` and decided in [Serialization](#serialization).
-It may be only a part of the snapshot, such as transform results keyed by
-stable module id. The saved data may therefore differ from the in-memory
-snapshot.
+The persistent cache is separate from `ScanStageCache` (`decided`). It holds
+the results of the plugin hooks for each module. The first scan after a
+restart is still a full scan. For a module whose inputs did not change, it
+reuses these results and does not run the hooks again.
+[Serialization](#serialization) defines what is saved.
 
 [cache]: https://github.com/rolldown/rolldown/blob/41f7dd782/crates/rolldown/src/types/scan_stage_cache.rs#L23
 [merge]: https://github.com/rolldown/rolldown/blob/41f7dd782/crates/rolldown/src/types/scan_stage_cache.rs#L123
@@ -63,6 +65,419 @@ change its decisions, following the rules in
 
 ## Serialization
 
+This section defines what Rolldown saves for each module.
+[Cache validity](#cache-validity) defines when a saved result is reused.
+[Storage and incremental writes](#storage-and-incremental-writes) defines how
+saved results are found, written, and removed.
+
+### What a restart skips
+
+Status: `decided`.
+
+A [module task][task] runs these steps for one module. After a restart, the
+steps with a dashed border are skipped for a module whose saved result is
+reused. The other steps run again. Only some modules get a saved result. See
+[Which modules get a saved result](#which-modules-get-a-saved-result).
+
+```mermaid
+flowchart LR
+    L[load] --> T[transform] --> P[parse and AstScanner] --> R[resolveId for each import] --> M[moduleParsed]
+    classDef skipped stroke-dasharray: 5 5
+    class L,T,R skipped
+```
+
+- **`load`, `transform`, and `resolveId` are skipped.** These plugin hooks
+  compute the result of a module. [Goal 1](../goals.md#goals) asks that a
+  cache hit skips them. `resolveDynamicImport` is skipped together with
+  `resolveId`.
+- **Parsing and `AstScanner` run again.** So Rolldown saves no AST and no
+  symbol table. The saved data is plain data, such as strings and paths.
+- **`moduleParsed` runs again.** Plugins then see every module, as in a build
+  without the cache.
+
+A module has one saved result for the three skipped steps. It is reused as a
+whole or not at all. [M1](../milestones.md#m1-persistent-scan-cache) does not
+cache the three steps independently.
+
+The `resolveId` call for an entry has no importing module, so no saved result
+can hold it. It runs on every restart (`proposed`).
+
+For example, `a.ts` imports `./b`, and a plugin transforms `a.ts`. After a
+restart with no changes, Rolldown takes the transformed code of `a.ts` from
+its saved result and parses it again. Parsing finds the import `./b`. Rolldown
+takes the `resolveId` result for `./b` from the same saved result, and
+continues with `b.ts`.
+
+### Which modules get a saved result
+
+Status: `decided`.
+
+A plugin hook is not cached unless the plugin turns the cache on for it. This
+holds for `resolveId`, `resolveDynamicImport`, `load`, and `transform`, and
+for Rust plugins and JavaScript plugins alike.
+
+```js
+{
+  name: 'my-plugin',
+  transform: {
+    cache: true,
+    handler(code, id) {},
+  },
+}
+```
+
+| `cache` | Meaning |
+| --- | --- |
+| not set | The hook runs on every restart. This is the default. |
+| `false` | The hook runs on every restart. The host cannot change this. |
+| `true` | Rolldown may skip the hook and reuse its saved result. |
+
+`cache` is a boolean. A plugin cannot add its own inputs to a saved result in
+M1. The host covers the options and the code of a plugin, as
+[What the host must guarantee](#what-the-host-must-guarantee) says. A cache
+key for plugins is an open decision of
+[M3](../milestones.md#m3-incremental-computation-granularity-and-correctness).
+
+The default is off because a hook can have side effects that Rolldown cannot
+see. For example, the `transform` hook of Vite's `vite:css-post` plugin
+[stores the compiled CSS in a map][css-styles], and its `renderChunk` hook
+reads the map. If `transform` is skipped, the CSS is missing from the output.
+A plugin that turns the cache on promises that skipping the hook loses
+nothing that another hook needs.
+
+**Rule.** Rolldown saves a result for a module only when every hook that it
+called during the module task has the cache on. A call that a hook `filter`
+blocks does not count.
+
+For example, the `transform` hooks of plugin A and plugin B both run for
+`app.tsx`. A has `cache: true`, and B does not set `cache`. Rolldown saves no
+result for `app.tsx`. After a restart, both A and B run. Caching each hook on
+its own, so that only B runs, is not part of M1. See
+[M3](../milestones.md#m3-incremental-computation-granularity-and-correctness).
+
+**Changing the default.** A host can tell Rolldown to treat hooks that do not
+set `cache` as if they had `cache: true`:
+
+```ts
+experimental: {
+  cache: {
+    assumeCacheableHooks: { resolveId: false, load: false, transform: false },
+  },
+}
+```
+
+Each value is `false` by default. The `resolveId` value also applies to
+`resolveDynamicImport`. This option is for tests and measurements: Rolldown
+cannot check the assumption, so the build result can be wrong. The value is
+part of the [options hash](#options-hash) (`proposed`).
+
+### What a saved result holds
+
+Status: `decided`.
+
+A value that a skipped step produces is saved only when something that is not
+skipped reads it:
+
+- a step that runs again, for example the parser reads the code that
+  `transform` returns;
+- a later stage, for example generate reads the sourcemaps;
+- the module task of another module, for example the task of `b.ts` reads
+  the `resolveId` result that the task of `a.ts` saved for `./b`.
+
+For example, `load` returns code. Only `transform` reads it, and `transform`
+is skipped too, so this code is not saved.
+
+This rule gives a saved result three parts.
+
+**State after `transform`.** It replaces `load` and `transform`. These are the
+values that [`run_inner`][task] holds after `load_source` returns:
+
+| Saved | Value in Rolldown |
+| --- | --- |
+| The code | `source: StrOrBytes` |
+| The module type | `module_type: ModuleType` |
+| The `moduleSideEffects` value that `load` or `transform` returned, or none | See below. |
+| The sourcemaps of `load` and of each `transform` | `sourcemap_chain: Vec<SourcemapChainElement>` |
+| Whether Rolldown read the file from disk | `is_read_from_disk` in [`load_source`][load_source]. Rolldown reads it again in [Side effects](#side-effects). |
+
+The `moduleSideEffects` value of a module can come from two places:
+
+1. the `resolveId` hook that resolved an import to this module,
+2. the `load` and `transform` hooks of this module.
+
+Rolldown saves only the second one. When `load` and `transform` return no
+value, it saves "none". The first one is already part of the resolve results
+of the importing module.
+
+For example, `resolveId` returns `false` for `./b`, and the hooks of `b.ts`
+return no value. Rolldown saves "none" for `b.ts`, not `false`. After a
+restart, `b.ts` takes the value from the resolve result for `./b`, as in a
+build without the cache.
+
+Today Rolldown keeps both values in [one variable][seed]. The saved result
+must keep them apart.
+
+**Resolve results.** They replace `resolveId`, once for each import. The
+result of `resolveId` is a [`ResolvedId`][resolved_id]. Rolldown saves these
+fields for each import:
+
+| Saved | Field |
+| --- | --- |
+| The resolved module id | `id` |
+| The import attributes of the import | `attributes` |
+| Whether it is external | `external`, `is_external_without_side_effects` |
+| The path of its `package.json` | the path of `package_json` |
+| The `moduleSideEffects` value from the hook | `side_effects` |
+| Or: the module was not found | [`ResolveError::NotFound`][not_found] |
+
+The other fields are not saved. Rolldown fills them in again from the saved
+fields:
+
+| Field | Filled in from |
+| --- | --- |
+| `package_json` | The saved path. Rolldown reads the file again. |
+| `module_def_format` | The extension of `id` and the `type` field of `package_json`, with [`infer_module_def_format`][format]. |
+| `normalize_external_id` | Not needed. Only `resolveId` itself reads it. |
+
+**Side effects.** See [Side effects](#side-effects).
+
+Notes:
+
+- **Import attributes:** a `with { ... }` clause affects a module only when
+  `experimental.importAttributes` is on. The attributes are then part of the
+  module id. So `./a.json` with `{ type: 'json' }` and `./a.json` without a
+  clause are two modules, and the saved result of one is never used for the
+  other. With the option off, Rolldown [drops the attributes][attrs] of a
+  module that is not external, so they are not an input of its saved result.
+  An external module keeps its attributes in both cases, because the output
+  prints them.
+- **Asserted module type:** an import can assert the module type of the
+  module that it points to. Today one case does this:
+  `new URL('./x.png', import.meta.url)` [asserts `Asset`][asserted] when
+  `experimental.resolveNewUrlToAsset` is on. A `with { type: ... }` clause
+  does not set it.
+
+  The asserted type affects `load` and `transform`: the `load` hook receives
+  it, and Rolldown [uses it as the module type][asserted-load] when no `load`
+  hook returns one. It is not part of the module id, so it is a separate
+  input of the saved result.
+- **`package.json`** (`proposed`): only the path is saved. On a restart,
+  Rolldown gives the path to [`try_get_package_json_or_create`][pkg], the same
+  function that `resolveId` uses today. It reads the file once and shares the
+  result across all modules through the resolver's cache. A change to the
+  file's `type` then takes effect after a restart without a new saved result.
+  So does a change to `sideEffects`, unless a `resolveId` hook read the field
+  itself and returned `moduleSideEffects`. That value is part of the saved
+  resolve results. See [Inputs that M1 does not track](#caveats). The saved
+  path still points at the `package.json` that `resolveId` found last time.
+- **Paths** are saved as absolute paths. M2 is expected to change this,
+  because absolute paths differ between worktrees.
+
+### Side effects
+
+Status: `decided`.
+
+A skipped step can do more than return a value. Rolldown records every such
+action that happens during the module task, whichever hook caused it, and
+does it again when it reuses the saved result:
+
+| Action in a skipped step | On reuse, Rolldown |
+| --- | --- |
+| A hook calls `this.addWatchFile` | Adds the file to the watched files. From `load` and `transform`, also to the [transform dependencies][td] of the module. A native plugin must make the call on the `load` or `transform` context for this. A call on the plain [`PluginContext`][native-watch] adds the file only to the watched files, as in the `import.meta.glob` case in [Caveats](#caveats). |
+| A hook calls `this.emitFile` | Emits the same asset, chunk, or prebuilt chunk with the same arguments. The reference id stays the same, because Rolldown [computes it from the file's content or name][refid]. |
+| A native plugin calls [`associate_module_with_file_ref`][assoc] | Links the module to the emitted file again. The `new URL()` finalizer reads this link. |
+| A hook calls `this.warn`, `this.info`, or `this.debug` | Prints the same log. |
+| Rolldown reads the module file from disk | Adds the file to the watched files, as [`load_source`][load_source] does today. |
+| Rolldown finds the tsconfig that governs the module | Adds the tsconfig to the watched files and to the [transform dependencies][td] of the module. |
+| `resolveId` finds no module | Gives the saved "not found" result to the code in [`resolve_dependencies`][not_found] that runs after resolution. It treats the import as external and prints the warning, as it does today. |
+
+**The tsconfig of a module.** Steps that a restart skips read the tsconfig:
+`resolveId` reads its `paths`, and a `transform` hook can read its compiler
+options. With the cache, no step reads the tsconfig again after a restart, so
+Rolldown must not reuse the saved result when the tsconfig changed.
+
+For example, a tsconfig maps `@/*` to `src/*`, and `a.ts` imports `@/b`. A
+user changes the mapping to `lib/*` while Rolldown is stopped. If the
+tsconfig is not tracked, `@/b` still points to `/proj/src/b.ts` after a
+restart.
+
+So Rolldown makes the tsconfig a [transform dependency](../glossary.md) of
+the module. This changes what Rolldown does today in two ways:
+
+- Today [`load_source`][load_source] looks for the tsconfig only when
+  Rolldown read the module file from disk (`is_read_from_disk`). With this
+  design, Rolldown looks for it for every module.
+- Today Rolldown adds the tsconfig only to the watched files. With this
+  design, it also adds it to the transform dependencies.
+
+Rolldown's own TypeScript and JSX transform also reads the tsconfig. It is
+part of parsing, which runs again on a restart, so it needs no rule.
+
+### Caveats
+
+**Modules that get no saved result.** A module gets no saved result when one
+of its hooks has the cache off. See
+[Which modules get a saved result](#which-modules-get-a-saved-result). In M1,
+it also gets none when a hook that has the cache on does one of these:
+
+- **A hook returns a `meta` value that is not empty.** `meta` never reaches
+  Rust. It lives only in a map on the JavaScript side
+  ([`moduleOptionMap`][optmap]), and it can hold values that cannot be
+  serialized.
+- **A JavaScript hook returns `moduleSideEffects`.** The value is also stored
+  in `moduleOptionMap`, where `this.getModuleInfo` reads it. Rolldown has no
+  call from Rust to JavaScript that writes this map, so this copy is missing
+  when the hook is skipped.
+- **A hook calls `this.load`.** The call runs the whole module task of
+  another module and returns its `ModuleInfo`. The hook can use that
+  information in its result, so the other module is an input that Rolldown
+  does not track.
+- **A hook assigns to `moduleSideEffects` on an object from
+  `this.getModuleInfo`.** The assignment runs a setter on the JavaScript
+  side. The setter writes the value into `moduleOptionMap` and marks the
+  entry as changed. After the scan, Rust asks JavaScript for the marked
+  entries and applies them to the modules
+  ([`defer_sync_scan_data`][defer]). When the hook is skipped, the assignment
+  is missing. Vite's `vite:build-html` plugin does this in its `transform`
+  hook.
+
+**No cache with `experimental.nativeMagicString`.** When this option and
+sourcemaps are both on, the sourcemap of a `transform` is
+[added to the module after all modules are loaded][magic], not during the
+module task. A result saved during the task would miss it. Rolldown does not
+use the persistent cache in this mode.
+
+[Future work](#future-work) lists a possible fix for each of the limits
+above.
+
+**Modules whose id is not a file.** In M1, a module gets a saved result only
+when its id is the absolute path of a file that exists. Rolldown does not
+parse the id. It takes the [raw id][raw-id], which is the id without its
+import attributes, and the path that Rolldown reads the module file from. It
+first checks that the raw id is an absolute path. Only then does it check
+whether a file exists at that path, so an id that is not a path costs no
+file system call. These modules get no saved result:
+
+| Module id | Example |
+| --- | --- |
+| A virtual id, which starts with `\0` | `\0virtual:foo`, and Rolldown's own runtime module `\0rolldown/runtime.js` |
+| An id that is not an absolute path | `virtual:foo` |
+| A path with no file at it | `/proj/Foo.vue?vue&type=style` |
+
+Two things are not settled for these modules:
+
+- **A path with a query.** The module `/proj/Foo.vue?vue&type=style` is made
+  from the file `/proj/Foo.vue`. How such a module depends on that file is
+  not decided. See
+  [rolldown/rolldown#10962](https://github.com/rolldown/rolldown/issues/10962).
+- **A virtual module.** Its hooks can read files. A file that a hook reads
+  becomes a [transform dependency](../glossary.md) only when the hook
+  registers it with `this.addWatchFile`. Today a call from the `transform`
+  hook of a module whose id starts with `\0` [does nothing][virtual-skip]. A
+  call from its `load` hook works.
+
+**Inputs that M1 does not track.**
+
+- `resolveId` is skipped, but the files that the resolver reads are not
+  tracked. The one exception is the tsconfig that governs the importing
+  module. See [Side effects](#side-effects). A file that this tsconfig pulls
+  in with `extends` is not tracked, and neither is a nearer `tsconfig.json`
+  that a user creates later. See item 1 of [Future work](#future-work-2).
+- The result of a hook can depend on which files exist in a directory. The
+  hook can register the directory with `this.addWatchFile`, but Restart
+  Validation covers files only. How a directory is validated after a restart
+  is not decided. See [Future work](0001-restart-validation.md#future-work)
+  in Restart Validation.
+
+  For example, `main.js` has `import.meta.glob('./pages/*.js')`, and the
+  `transform` hook that expands it has the cache on. A user creates
+  `pages/c.js` while Rolldown is stopped. After a restart, Rolldown reuses
+  the saved result of `main.js`, so the object that the glob returns has no
+  entry for `c.js`.
+
+  Today the glob plugin [adds `pages/`][glob-watch] only to the watched
+  files, not to the transform dependencies of `main.js`. So Rolldown has no
+  record that `main.js` depends on `pages/`. See
+  [rolldown/cache#14](https://github.com/rolldown/cache/issues/14).
+- A skipped hook can read values that Rolldown does not track, such as the
+  result of `this.resolve`, the `ModuleInfo` of another module from
+  `this.getModuleInfo`, or a file through `this.fs`. The host covers them. See
+  [What the host must guarantee](#what-the-host-must-guarantee).
+
+### Open questions
+
+1. **What does it cost to parse every module again?** The
+   [M1 deliverable](../milestones.md#m1-persistent-scan-cache) asks that the
+   choice of saved data rests on measurements. The decision in
+   [What a restart skips](#what-a-restart-skips) needs a measurement of the
+   steps that run again.
+
+### Future work
+
+1. **Let a plugin keep state across restarts through `meta`.**
+
+   - **Problem:** A plugin that keeps state in its own memory cannot turn the
+     cache on in M1. For example, `vite:css-post` keeps the compiled CSS in a
+     map for `renderChunk`. A hook that returns `meta` gets no saved result
+     either. See [Caveats](#caveats).
+   - **Possible fix:** The plugin puts the state that `renderChunk`,
+     `generateBundle`, and other later hooks need into `meta`, as values that
+     can be serialized. Rolldown saves `meta` with the result and restores it
+     on a restart. The plugin can then turn the cache on.
+   - **Milestone:** Not decided. It is not M1, and the sooner the better.
+
+2. **Restore `moduleSideEffects` on the JavaScript side.**
+
+   - **Problem:** A JavaScript hook that returns `moduleSideEffects` gets no
+     saved result in M1. See [Caveats](#caveats).
+   - **Possible fix:** Add a call from Rust to JavaScript that writes
+     `moduleOptionMap`. Rolldown can then restore the value on a restart. The
+     same call can restore `meta` for item 1.
+
+3. **Let a hook that calls `this.load` get a saved result.**
+
+   - **Problem:** A hook that calls `this.load` gets no saved result in M1.
+     See [Caveats](#caveats).
+   - **Possible fix:** Save the call, and make the loaded module an input of
+     the calling module. Rolldown then does not reuse the saved result of the
+     calling module when the loaded module changes.
+
+4. **Let a hook that assigns to `moduleSideEffects` get a saved result.**
+
+   - **Problem:** A hook that assigns to `moduleSideEffects` on an object from
+     `this.getModuleInfo` gets no saved result in M1. See [Caveats](#caveats).
+   - **Possible fix:** Save the assignment as a side effect of the calling
+     module, and apply it again on a restart. This needs the call from Rust to
+     JavaScript of item 2.
+
+5. **Use the persistent cache with `experimental.nativeMagicString`.**
+
+   - **Problem:** Rolldown does not use the persistent cache when this option
+     and sourcemaps are both on. See [Caveats](#caveats).
+   - **Possible fix:** Write the saved result after the sourcemaps are added
+     to the module, at the end of the scan.
+
+[task]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/module_task.rs#L99
+[seed]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/module_task.rs#L118
+[css-styles]: https://github.com/vitejs/vite/blob/a976df388/packages/vite/src/node/plugins/css.ts#L646
+[load_source]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/module_task.rs#L255
+[resolved_id]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/types/resolved_id.rs#L41
+[attrs]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/types/resolved_id.rs#L58
+[asserted]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/ast_scanner/new_url.rs#L69
+[asserted-load]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/utils/load_source.rs#L50
+[not_found]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/resolve_utils.rs#L109
+[format]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/utils/resolve_id_with_plugins.rs#L21
+[pkg]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_resolver/src/resolver.rs#L113
+[refid]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/file_emitter.rs#L279
+[assoc]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/file_emitter.rs#L468
+[optmap]: https://github.com/rolldown/rolldown/blob/2842dcd7c/packages/rolldown/src/plugin/plugin-context-data.ts#L47
+[defer]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/deferred_scan_data.rs#L10
+[magic]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/stages/scan_stage.rs#L241
+[glob-watch]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin_vite_import_glob/src/utils.rs#L675-L682
+[native-watch]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/plugin_context/native_plugin_context.rs#L220
+[virtual-skip]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/plugin_context/transform_plugin_context.rs#L70-L75
+[raw-id]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/types/module_id.rs#L105-L108
+
 ## Cache validity
 
 A saved scan result is reused only when every input that produced it is
@@ -82,7 +497,7 @@ uses Vite as the example host. The same rules apply to any other host.
 | Input | Provided by | How a change is detected | What a change invalidates | Status |
 | --- | --- | --- | --- | --- |
 | A module file in the graph | Rolldown | The content hash differs from the saved hash | That module | `decided` |
-| A file that a plugin registers with `addWatchFile` ([`transform_dependencies`][td]) | Rolldown | The content hash differs from the saved hash | The modules that registered it | `decided` |
+| A [transform dependency](../glossary.md) of a module ([`transform_dependencies`][td]) | Rolldown | The content hash differs from the saved hash | The modules that depend on it | `decided` |
 | Normalized options ([`NormalizedBundlerOptions`][nbo]) | Rolldown | The [options hash](#options-hash) differs from the saved hash | The whole cache | `proposed` |
 | Cache key | Host | The string differs from the saved string | The whole cache | `proposed` |
 | A [build dependency](../glossary.md) | Host | The content hash differs from the saved hash | The whole cache | `proposed` |
@@ -96,7 +511,7 @@ Seen from one module, its saved result is reused only when all of these hold:
 2. The options hash is the same.
 3. No build dependency changed.
 4. The module file did not change.
-5. No file that the module registered with `addWatchFile` changed.
+5. No transform dependency of the module changed.
 
 If 1, 2, or 3 fails, Rolldown discards the whole cache and runs a full scan.
 If 4 or 5 fails, Rolldown scans that module again and keeps the rest.
@@ -105,7 +520,8 @@ check 4 and 5.
 
 The first two rows of the table follow from the [M1 deliverables][m1].
 `transform_dependencies` lives in memory today and is lost on restart, so it
-must be saved with the cache. See [Serialization](#serialization).
+must be saved with the cache. [Side effects](#side-effects) defines which
+files are transform dependencies.
 
 The Rolldown version is also an input. It is handled with cache format versions
 in [Storage and incremental writes](#storage-and-incremental-writes).
@@ -135,7 +551,7 @@ Rules:
 
 M1 hashes all serializable options, including options that only affect later
 stages, such as output file names. Changing one of those discards the cache
-without need. This is safe but wasteful. See [Future work](#future-work).
+without need. This is safe but wasteful. See [Future work](#future-work-1).
 
 M2 is expected to change this rule. Options such as `cwd` hold absolute paths,
 which differ between worktrees, so hashing them as they are would prevent
@@ -153,6 +569,7 @@ experimental: {
     cacheKey?: string,
     buildDependencies?: string[],
     assumeUnchanged?: (string | RegExp)[],
+    assumeCacheableHooks?: { resolveId?: boolean, load?: boolean, transform?: boolean },
   },
 }
 ```
@@ -170,6 +587,10 @@ tracked file on restart when its path matches. The host may set it only when
 module paths are real paths, with symbolic links resolved. See
 [guarantee 3](#what-the-host-must-guarantee). Rolldown ignores it when
 `resolve.symlinks` is `false` and then validates every tracked file.
+
+**`assumeCacheableHooks`** tells Rolldown to treat hooks that do not set
+`cache` as cacheable. It is defined in
+[Which modules get a saved result](#which-modules-get-a-saved-result).
 
 #### What the host must guarantee
 
@@ -253,27 +674,45 @@ Vite cannot see every input in guarantee 1. The user covers the rest:
 
 ## Future work
 
-1. **Invalidate only the installed package that changed.** Today a change to
-   an installed package discards the whole cache. Narrowing it needs three
-   things:
+1. **Track the files that the resolver reads or looks for.**
 
-   1. The cache uses the package name and version as the key for the modules
-      of a package.
-   2. The incremental build revokes the old package and resolves the import
-      again from the importer. Rolldown must then record, on each import
-      record, the paths that the resolver read or found missing.
-   3. The watcher and Restart Validation check whether the file behind a
-      symbolic link changed, not only the link path. With pnpm,
-      `node_modules/react` keeps its path but points to another version after
-      an update.
+   - **Problem:** The result of `resolveId` depends on files that Rolldown
+     does not track: the files that the resolver read, and the paths that it
+     looked for and did not find. For example:
+     - `./b` resolves to `b/index.ts`. Later a user creates `b.ts`, which
+       takes over the import.
+     - A user creates a `tsconfig.json` that is nearer to the importing
+       module, or changes a file that a tsconfig pulls in with `extends`.
 
-   Today Rolldown [watches only the real path][watch] that an import resolved
-   to. So it does not build an updated dependency correctly after
-   `pnpm update`, and it does not resolve the importer again when a user file
-   moves or a new file takes over an import. This defect is already in
-   Rolldown's incremental build. A restart repairs it today, because a restart
-   runs a full scan. With the cache, a restart reuses the saved result, so it
-   no longer repairs it.
+     Rolldown's incremental build has this defect today. A restart repairs
+     it, because a restart runs a full scan. With the cache, a restart reuses
+     the saved result, so it no longer repairs it.
+   - **Possible fix:** Record, for each import, the paths that the resolver
+     read and the paths that it found missing. Make them inputs of the saved
+     result of the importing module. Restart Validation already saves whether
+     a tracked file exists.
+
+2. **Invalidate only the installed package that changed.**
+
+   - **Problem:** A change to one installed package discards the whole
+     cache. The reason is how a host covers `node_modules`. For example,
+     Vite passes the file that records the state of the installed packages,
+     such as pnpm's `node_modules/.pnpm/lock.yaml`, as a
+     [build dependency](../glossary.md). When a package is installed,
+     updated, or removed, that file changes, and a changed build dependency
+     discards the whole cache. See [Example: Vite](#example-vite).
+   - **Possible fix:** Narrowing it needs three things:
+
+     1. The cache uses the package name and version as the key for the
+        modules of a package.
+     2. The incremental build revokes the old package and resolves the
+        import again from the importer. This needs item 1.
+     3. The watcher and Restart Validation check whether the file behind a
+        symbolic link changed, not only the link path. With pnpm,
+        `node_modules/react` keeps its path but points to another version
+        after an update. Today Rolldown [watches only the real path][watch]
+        that an import resolved to, so it does not build an updated
+        dependency correctly after `pnpm update`.
 
 [watch]: https://github.com/rolldown/rolldown/blob/41f7dd782/internal-docs/dev-engine/implementation.md
 
