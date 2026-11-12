@@ -63,6 +63,27 @@ change its decisions, following the rules in
 
 ## Restart flow
 
+The diagram shows the first scan after a restart. The table links each step
+to the section that defines it.
+
+```mermaid
+flowchart TD
+    T["1. A module task starts"] --> K["2. Compute key 1 and key 2"]
+    K --> Q{"3. Saved result found?"}
+    Q -- "cache hit" --> R["4. Reuse the saved result"]
+    Q -- "cache miss" --> H["5. Run the hooks and save a new result"]
+    R --> N["6. The other steps of the module task run"]
+    H --> N
+```
+
+| Step | Defined in |
+| --- | --- |
+| 2 | [Keys](#keys), [Restart Validation](0001-restart-validation.md) |
+| 3 | [Keys](#keys), [Cache validity](#cache-validity) |
+| 4 | [What a saved result holds](#what-a-saved-result-holds), [Side effects](#side-effects) |
+| 5 | [Which modules get a saved result](#which-modules-get-a-saved-result), [Writing saved results](#writing-saved-results) |
+| 6 | [What a restart skips](#what-a-restart-skips) |
+
 ## Storage and incremental writes
 
 ### Keys
@@ -1007,6 +1028,19 @@ Vite cannot see every input in guarantee 1. The user covers the rest:
 - For a file that the config reads without importing it, such as with
   `fs.readFileSync`, the user adds it to `experimental.cache.buildDependencies`.
 
+#### Example: Rolldown CLI
+
+Status: `proposed`.
+
+The Rolldown CLI is a host too. It needs no rule of its own:
+
+- A CLI flag becomes a value of the options that the CLI
+  [passes to Rolldown][cli-merge]. So it ends up in the normalized options and
+  is part of the [options hash](#options-hash).
+- The CLI finds the config file that it [loads][cli-config] and the files
+  that this file imports. It adds all of them to `buildDependencies`. The
+  user does not list them.
+
 ### Open questions
 
 1. **How does Vite cover a workspace package that the config file imports by
@@ -1033,6 +1067,8 @@ Vite cannot see every input in guarantee 1. The user covers the rest:
    [M3](../milestones.md#m3-incremental-computation-granularity-and-correctness).
 
 [pattern-filter]: https://github.com/rolldown/rolldown/blob/67e2203c4/crates/rolldown_utils/src/pattern_filter.rs#L54-L67
+[cli-merge]: https://github.com/rolldown/rolldown/blob/67e2203c4/packages/rolldown/src/cli/commands/bundle.ts#L152-L172
+[cli-config]: https://github.com/rolldown/rolldown/blob/67e2203c4/packages/rolldown/src/cli/commands/bundle.ts#L25-L29
 [td]: https://github.com/rolldown/rolldown/blob/41f7dd782/crates/rolldown_plugin/src/plugin_driver/mod.rs#L44
 [nbo]: https://github.com/rolldown/rolldown/blob/41f7dd782/crates/rolldown_common/src/inner_bundler_options/types/normalized_bundler_options.rs#L44
 
