@@ -113,6 +113,7 @@ runs a hook of the module.
 | The content hash of each build dependency | See [Host inputs](#host-inputs). |
 | The module id | With `experimental.importAttributes` on, it holds the import attributes. |
 | The asserted module type | See the note in [What a saved result holds](#what-a-saved-result-holds). |
+| The watch mode | The value that JavaScript plugins read as `this.meta.watchMode`. The JavaScript API sets it: `true` for `watch()`, `false` otherwise. |
 | The content hash of the module file | Left out when the path of the file matches `assumeUnchanged`. See [Files under `assumeUnchanged` paths](#files-under-assumeunchanged-paths). |
 
 **Why the Rolldown version is in the cache key.** A new version of Rolldown
@@ -359,6 +360,12 @@ An incremental build is the one exception. It reuses the scan results that
 Rolldown holds in memory, which is faster than reading the cache. So it does
 not read the cache, and it runs the hooks of the modules that changed.
 
+A lazy compilation in dev mode fetches the modules of a dynamic import the
+first time the browser asks for it. These modules are not in memory yet, so
+Rolldown reads the cache for them as a full scan does. When the browser asks
+for the same import again, the modules are already in memory, and Rolldown
+reuses them as an incremental build does.
+
 **Writing.** Rolldown saves a new result whenever the hooks of a module ran.
 An incremental build updates the scan results in memory, as it does today,
 and also saves the new result to the cache. A write is incremental: it adds
@@ -599,7 +606,7 @@ fields:
 | Field | Filled in from |
 | --- | --- |
 | `package_json` | The saved path. Rolldown reads the file again. |
-| `module_def_format` | The extension of `id` and the `type` field of `package_json`, with [`infer_module_def_format`][format]. |
+| `module_def_format` | The `type` field of `package_json` and the extension of the resolved path, with [`infer_module_def_format`][format], as when the import was resolved: a `resolveId` hook gives the whole `id`, and Rolldown's resolver gives `id` without `?query` and `#fragment`. The saved result records which one. |
 | `normalize_external_id` | Not needed. Only `resolveId` itself reads it. |
 
 **Side effects.** See [Side effects](#side-effects).
@@ -669,7 +676,10 @@ the module. This changes what Rolldown does today in two ways:
 
 - Today [`load_source`][load_source] looks for the tsconfig only when
   Rolldown read the module file from disk (`is_read_from_disk`). With this
-  design, Rolldown looks for it for every module.
+  design, Rolldown looks for it for every module whose id is an absolute
+  path, also when the cache is off. Otherwise a build with the cache would
+  watch other files than a build without it
+  ([principle 1](../principles.md#1-caching-must-preserve-correctness)).
 - Today Rolldown adds the tsconfig only to the watched files. With this
   design, it also adds it to the transform dependencies.
 
@@ -864,6 +874,7 @@ uses Vite as the example host. The same rules apply to any other host.
 | Normalized options ([`NormalizedBundlerOptions`][nbo]) | Rolldown | Key 1, as the [options hash](#options-hash) | Every module | `proposed` |
 | Cache key | Host, with the Rolldown version in front | Key 1 | Every module | `proposed` |
 | A [build dependency](../glossary.md) | Host | Key 1 | Every module | `proposed` |
+| The watch mode (`this.meta.watchMode`) | Rolldown | Key 1 | Every module | `decided` |
 
 A change to an input never removes cache data. It only causes a miss. Rolldown
 removes cache data only by `maxAge`. See
@@ -873,13 +884,14 @@ Seen from one module, its saved result is reused only when all of these hold:
 
 1. The cache key is the same.
 2. The options hash is the same.
-3. No build dependency changed.
-4. The module file did not change.
-5. No transform dependency of the module changed.
+3. The watch mode is the same.
+4. No build dependency changed.
+5. The module file did not change.
+6. No transform dependency of the module changed.
 
-If 1, 2, or 3 fails, every module is a miss. If 4 or 5 fails, that module is
-a miss, and the other modules are not affected.
-In 4 and 5, Rolldown treats a file whose path matches
+If 1, 2, 3, or 4 fails, every module is a miss. If 5 or 6 fails, that module
+is a miss, and the other modules are not affected.
+In 5 and 6, Rolldown treats a file whose path matches
 [`assumeUnchanged`](#host-inputs) as unchanged.
 
 The first two rows of the table follow from the [M1 deliverables][m1].
@@ -894,8 +906,10 @@ The Rolldown version is also an input. It is part of the cache key. See
 
 Status: `proposed`.
 
-Rolldown computes one hash from [`NormalizedBundlerOptions`][nbo]. The hash is
-an input of key 1. See [Keys](#keys).
+Rolldown computes one hash from [`NormalizedBundlerOptions`][nbo] and from the
+`resolve` and `tsconfig` options. Rolldown uses `resolve` and `tsconfig` to
+create its resolver while it normalizes the options, so they are not in
+`NormalizedBundlerOptions`. The hash is an input of key 1. See [Keys](#keys).
 
 The hash is taken from the normalized options, not from the options as the user
 wrote them. A change in how Rolldown fills in defaults then also changes the
@@ -911,6 +925,16 @@ Rules:
   `treeshake.moduleSideEffects` function. Rolldown cannot tell whether a
   function behaves the same as before. The host must cover it. See
   [Host inputs](#host-inputs).
+- **Callbacks into the host are skipped**, also whether they are set:
+  `onLog`, `watch.onInvalidate`, and the callbacks that the JavaScript API
+  sets for itself, such as the one that measures plugin timings. They never
+  change a scan result. `rolldown()`, `watch()` and the dev engine set
+  different ones.
+- **`experimental.cache`:** only `assumeCacheableHooks` is hashed. `cacheKey`
+  and `buildDependencies` are inputs of key 1 by themselves. `dir` and `maxAge`
+  do not change scan results. `assumeUnchanged` changes the form of key 1 and
+  key 2 by itself. See
+  [Files under `assumeUnchanged` paths](#files-under-assumeunchanged-paths).
 - **Plugins** contribute only their names, in order. Plugin options and plugin
   code are not hashed. The host must cover them as well.
 
@@ -955,6 +979,12 @@ every module is a miss.
 **`buildDependencies`** is a list of file paths. The content hash of each file
 is an input of key 1. If any of them changes, every module is a miss. Rolldown
 does not follow their imports, so the host must list every file.
+
+Rolldown reads the build dependencies at each scan. If one of them changed
+since the first scan of a bundler, the cache is off for that bundler until a
+restart. The options and plugins of the bundler were made from the old files,
+and the files under `assumeUnchanged` paths may have changed with them. A new
+result could then be saved under a key that does not match its inputs.
 
 **`assumeUnchanged`** is a list of path patterns. Rolldown does not hash a
 module file or a transform dependency whose path matches. A build dependency
