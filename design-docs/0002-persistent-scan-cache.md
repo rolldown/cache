@@ -524,6 +524,28 @@ result for `app.tsx`. After a restart, both A and B run. Caching each hook on
 its own, so that only B runs, is not part of M1. See
 [M3](../milestones.md#m3-incremental-computation-granularity-and-correctness).
 
+**Marking one call.** A Rust plugin that has the cache on can call
+`ctx.mark_not_cacheable()` in a hook call. Rolldown then saves no result for
+the module of that call. The other modules still get saved results. A
+JavaScript plugin cannot call it.
+
+For example, the resolve plugin of Vite (`viteResolvePlugin`) has the cache on
+for `resolveId`. In dev, it can send a warning to a JavaScript callback of Vite
+instead of `ctx.warn`:
+
+```rust
+if let Some(on_warn) = &self.on_warn {
+  // Rolldown cannot send this warning again when it reuses a saved result.
+  ctx.mark_not_cacheable(|| "sent a warning to `onWarn`".into());
+  on_warn(message);
+}
+```
+
+`a.js` imports `./b.js` and `pkg`, and resolving `pkg` sends such a warning.
+Rolldown saves no result for `a.js`, and saves one for `b.js`. After a
+restart, the hooks of `a.js` run again and print the warning again. `b.js`
+reuses its saved result.
+
 **Changing the default.** A host can tell Rolldown to treat hooks that do not
 set `cache` as if they had `cache: true`:
 
@@ -713,6 +735,13 @@ it also gets none when a hook that has the cache on does one of these:
   ([`defer_sync_scan_data`][defer]). When the hook is skipped, the assignment
   is missing. Vite's `vite:build-html` plugin does this in its `transform`
   hook.
+- **A JavaScript hook sends a log that `JSON.stringify` cannot convert.**
+  Rolldown saves the logs of a JavaScript plugin as JSON, so that it can send
+  them to `onLog` again on reuse. `this.warn({ message: 'x', meta: { n: 1n } })`
+  cannot be converted, because `JSON.stringify` throws for a `BigInt`. A value
+  that JSON converts with a loss is sent again in its JSON form:
+  `this.warn({ message: 'x', cause: new Error('y') })` is sent again with
+  `cause: {}`.
 
 **No cache with `experimental.nativeMagicString`.** When this option and
 sourcemaps are both on, the sourcemap of a `transform` is
@@ -1047,7 +1076,10 @@ Vite hashes the normalized config with the same rules as the
 a function, Vite lists the config file that holds it as a build dependency.
 
 Vite sets `assumeUnchanged` only when it finds a file that records the state of
-the installed packages, and `resolve.preserveSymlinks` is `false`.
+the installed packages, and `resolve.preserveSymlinks` is `false`. When a tool
+writes files into `node_modules` without installing a package, Vite does not
+meet guarantee 2. See
+[Vite](../meta-frameworks/vite.md#files-that-cover-the-installed-packages).
 
 Vite cannot see every input in guarantee 1. The user covers the rest:
 
