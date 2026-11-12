@@ -391,7 +391,8 @@ in another format.
 
 A write that fails does not fail the build either. For example, the disk is
 full, or the cache directory is read-only. The build continues, and the
-result is not saved.
+result is not saved. Rolldown prints a warning. How it prints the warning is
+left to the implementation.
 
 A saved result from another version of Rolldown is not found at all, because
 the Rolldown version is part of key 1. See [Keys](#keys).
