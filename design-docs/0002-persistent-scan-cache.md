@@ -211,6 +211,7 @@ Under key 1 and key 2, Rolldown stores one saved result.
 | The state after `transform` | [What a saved result holds](#what-a-saved-result-holds) |
 | The resolve result of each import | [What a saved result holds](#what-a-saved-result-holds) |
 | The side effects that Rolldown does again | [Side effects](#side-effects) |
+| The module meta that the hooks set | [Module meta](#module-meta) |
 
 This section adds how two of them are stored.
 
@@ -249,9 +250,9 @@ stage [takes only the modules][hmr-affected] that have the file as a
 transform dependency.
 
 An example. `a.ts` imports `./b`. A plugin named `theme` transforms `a.ts`,
-registers `/proj/theme.json`, emits `theme.css`, and prints a warning. The
-field names and the JSON form are for reading only. They are not the format
-on disk.
+registers `/proj/theme.json`, emits `theme.css`, prints a warning, and
+returns `meta` for `a.ts`. The field names and the JSON form are for reading
+only. They are not the format on disk.
 
 ```json
 {
@@ -286,7 +287,10 @@ on disk.
           "logs": [
             { "level": "warn", "plugin": "theme", "message": "theme.json uses a deprecated field" }
           ]
-        }
+        },
+        "meta": [
+          { "module": "/proj/src/a.ts", "key": "theme", "value": { "tokens": 12 } }
+        ]
       }
     }
   }
@@ -514,6 +518,14 @@ reads the map. If `transform` is skipped, the CSS is missing from the output.
 A plugin that turns the cache on promises that skipping the hook loses
 nothing that another hook needs.
 
+But a plugin does not have to keep such data in its own memory. It can put
+the data into the meta of the module instead. Rolldown cannot see a map
+inside a plugin, but it can see module meta: it saves the meta with the
+result and puts it back on reuse. In the example above, `transform` can
+return the compiled CSS as `meta`, and `renderChunk` can read it with
+`this.getModuleInfo(id).meta`. Then skipping `transform` loses nothing, and
+the hook can have the cache on. See [Module meta](#module-meta).
+
 **Rule.** Rolldown saves a result for a module only when every hook that it
 called during the module task has the cache on. A call that a hook `filter`
 blocks does not count.
@@ -524,10 +536,10 @@ result for `app.tsx`. After a restart, both A and B run. Caching each hook on
 its own, so that only B runs, is not part of M1. See
 [M3](../milestones.md#m3-incremental-computation-granularity-and-correctness).
 
-**Marking one call.** A Rust plugin that has the cache on can call
-`ctx.mark_not_cacheable()` in a hook call. Rolldown then saves no result for
-the module of that call. The other modules still get saved results. A
-JavaScript plugin cannot call it.
+**Marking one call.** A plugin that has the cache on can mark one hook call.
+Rolldown then saves no result for the module of that call. The other modules
+still get saved results. A Rust plugin calls `ctx.mark_not_cacheable()`. A
+JavaScript plugin calls `this.markNotCacheable()`.
 
 For example, the resolve plugin of Vite (`viteResolvePlugin`) has the cache on
 for `resolveId`. In dev, it can send a warning to a JavaScript callback of Vite
@@ -545,6 +557,13 @@ if let Some(on_warn) = &self.on_warn {
 Rolldown saves no result for `a.js`, and saves one for `b.js`. After a
 restart, the hooks of `a.js` run again and print the warning again. `b.js`
 reuses its saved result.
+
+**Parallel plugins.** A [parallel plugin][parallel] is a JavaScript plugin
+that Rolldown runs in worker threads. A hook of a parallel plugin never has
+the cache on, even when it sets `cache: true` or the host sets
+`assumeCacheableHooks`. So a module gets no saved result when such a hook is
+called for it. Each worker has its own copy of the module meta, and M1 does
+not record the logs and the meta of a hook call in a worker.
 
 **Changing the default.** A host can tell Rolldown to treat hooks that do not
 set `cache` as if they had `cache: true`:
@@ -579,7 +598,7 @@ skipped reads it:
 For example, `load` returns code. Only `transform` reads it, and `transform`
 is skipped too, so this code is not saved.
 
-This rule gives a saved result three parts.
+This rule gives a saved result four parts.
 
 **State after `transform`.** It replaces `load` and `transform`. These are the
 values that [`run_inner`][task] holds after `load_source` returns:
@@ -594,17 +613,26 @@ values that [`run_inner`][task] holds after `load_source` returns:
 
 The `moduleSideEffects` value of a module can come from two places:
 
-1. the `resolveId` hook that resolved an import to this module,
+1. a `resolveId` hook that returned a value for this module,
 2. the `load` and `transform` hooks of this module.
 
-Rolldown saves only the second one. When `load` and `transform` return no
-value, it saves "none". The first one is already part of the resolve results
-of the importing module.
+In the saved result of this module, Rolldown saves only the second one. When
+`load` and `transform` return no value, it saves "none". The first one is
+saved with the module task that ran the `resolveId` call. This is not always
+the task that created the module:
+
+- For an import, the value is part of the resolve results of the importing
+  module.
+- For a call that a hook started with `this.resolve`, the value is part of
+  the saved result of the module task whose hook called `this.resolve`, as
+  `meta` from `resolveId` is. See [Module meta](#module-meta).
 
 For example, `resolveId` returns `false` for `./b`, and the hooks of `b.ts`
-return no value. Rolldown saves "none" for `b.ts`, not `false`. After a
-restart, `b.ts` takes the value from the resolve result for `./b`, as in a
-build without the cache.
+return no `moduleSideEffects` value. Rolldown saves "none" for `b.ts`, not
+`false`. After a restart, `b.ts` takes the value from the resolve result for
+`./b`, as in a build without the cache. A JavaScript hook of `b.ts` that
+returns an object without `moduleSideEffects` is a special case. See
+[0003 Module info in cached hooks](0003-module-info-in-cached-hooks.md).
 
 Today Rolldown keeps both values in [one variable][seed]. The saved result
 must keep them apart.
@@ -632,6 +660,9 @@ fields:
 | `normalize_external_id` | Not needed. Only `resolveId` itself reads it. |
 
 **Side effects.** See [Side effects](#side-effects).
+
+**Module meta.** The meta that the hooks of JavaScript plugins return for a
+module, and the meta that Rust plugins set. See [Module meta](#module-meta).
 
 Notes:
 
@@ -665,6 +696,260 @@ Notes:
 - **Paths** are saved as absolute paths. M2 is expected to change this,
   because absolute paths differ between worktrees.
 
+### Module meta
+
+Status: `decided`.
+
+A plugin can attach data to a module. This data is the [meta][meta-docs] of
+the module. One hook sets it, and another hook reads it later. For example,
+`transform` sets it, and `renderChunk` reads it.
+
+Rolldown saves the meta of a module in its saved result. When it reuses the
+saved result, it puts the meta back. So a later hook reads the same meta,
+whether the earlier hook ran or was skipped.
+
+```mermaid
+flowchart LR
+    T["transform sets meta"] --> M["Meta of the module"]
+    T --> S["Saved result"]
+    S -- "reuse: transform does not run" --> M
+    M --> R["renderChunk reads meta"]
+```
+
+For example, a plugin finds the icons that each module uses, and needs the
+list again in `renderChunk`:
+
+```js
+{
+  name: 'icons',
+  transform: {
+    cache: true,
+    handler(code, id) {
+      return { code, meta: { icons: findIcons(code) } }
+    },
+  },
+  renderChunk(code, chunk) {
+    for (const id of chunk.moduleIds) {
+      const icons = this.getModuleInfo(id).meta.icons
+      // ...
+    }
+  },
+}
+```
+
+`a.ts` uses the icon `home`. In the first build, `transform` returns
+`meta: { icons: ['home'] }`, and Rolldown saves it. After a restart with no
+changes, `transform` does not run for `a.ts`. Rolldown takes
+`{ icons: ['home'] }` from the saved result. `renderChunk` reads the same
+value as in a build without the cache.
+
+**What Rolldown saves.** Rolldown saves the meta that the JavaScript hooks of
+a module task return. A hook can return meta in two ways:
+
+- `load` or `transform` returns `meta`. This meta is for the module of the
+  task.
+- `resolveId` returns `meta`. This meta is for the module that the import
+  resolves to.
+
+Rolldown saves both in the saved result of the module whose task ran the
+hook. The hook made this meta from the inputs of that module. When one of
+these inputs changes, Rolldown does not find the saved result. It then does
+not put this meta back, and the hook runs again.
+
+For example, `a.ts` imports `./b`. While the hooks of `a.ts` run, `resolveId`
+returns `meta: { y: 2 }` for `b.ts`. Rolldown saves `{ y: 2 }` in the saved
+result of `a.ts`, not of `b.ts`. Later a user removes the import from
+`a.ts`. The saved result of `a.ts` is no longer found, so `b.ts` does not
+get `{ y: 2 }`, as in a build without the cache.
+
+Rolldown saves only what the hooks of this module task return. The meta of a
+module can also hold keys from an earlier build in the same process, and
+keys that the hooks of another module set. They are not part of this saved
+result.
+
+The meta of a module can hold keys from an earlier build because the
+JavaScript side keeps one meta object for each module for as long as the
+bundler lives, in watch mode and in dev mode. Rollup starts each build with
+new meta for a module whose hooks run again. See
+[rolldown/rolldown#11223](https://github.com/rolldown/rolldown/issues/11223).
+
+**Meta and `moduleSideEffects` through module info.** In a hook that has
+the cache on, Rolldown saves only the `meta` and `moduleSideEffects` that the
+hook returns. When the hook reads or changes them through
+`this.getModuleInfo` or a `this.resolve` result, or Rolldown passes on a
+`moduleSideEffects` value that another hook set, the module gets no saved
+result. See
+[0003 Module info in cached hooks](0003-module-info-in-cached-hooks.md).
+
+**Reuse.** A saved result holds some keys of the meta, each with its value.
+When Rolldown reuses the saved result, it writes each of these keys into the
+meta of the module. If the meta already has a key with the same name, the
+saved value replaces the old value. Rolldown does not touch the keys that
+are not in the saved result: it does not change them, and it does not remove
+them.
+
+For example, the meta of `a.ts` is `{ other: 1, icons: ['old'] }`. The saved
+result of `a.ts` holds one key: `icons`, with the value `['home']`. After
+reuse, the meta of `a.ts` is `{ other: 1, icons: ['home'] }`. The key `icons`
+has the saved value. The key `other` is as it was.
+
+A hook that returns `meta` changes the meta of the module in the same way.
+So the meta of a module is the same whether the hook ran or was skipped.
+
+A plugin can read the meta in any hook, also in a hook of the generate
+stage such as `renderChunk`. So Rolldown keeps the saved values for as long
+as the module is in memory. The JavaScript side takes them from Rolldown
+when it reads a module. Rolldown does not call JavaScript for each module
+that it reuses.
+
+**`moduleSideEffects`.** The `moduleSideEffects` value of a module is saved
+and put back like its meta, when a hook returns it.
+
+```js
+{
+  name: 'icons',
+  transform: {
+    cache: true,
+    handler(code, id) {
+      if (id.endsWith('.icon.js')) {
+        return { code, moduleSideEffects: false }
+      }
+    },
+  },
+  renderChunk(code, chunk) {
+    for (const id of chunk.moduleIds) {
+      if (this.getModuleInfo(id).moduleSideEffects === false) {
+        // ...
+      }
+    }
+  },
+}
+```
+
+The value `false` is used in two places. Rolldown uses it for tree shaking.
+The JavaScript side keeps a second copy, which `renderChunk` reads with
+`this.getModuleInfo(id).moduleSideEffects`.
+
+In the first build, `transform` returns `false` for `home.icon.js`, and
+Rolldown saves it. After a restart with no changes, `transform` does not run
+for `home.icon.js`. Rolldown takes `false` from the saved result. It uses it
+for tree shaking, and it puts the copy on the JavaScript side back. So
+`renderChunk` reads `false`, as in a build without the cache.
+
+**Values that cannot be saved.** Rolldown saves the meta of JavaScript
+plugins as JSON. So each value in the meta must be the same after it is
+written as JSON and read back. This includes which values are the same
+object. Also, the meta itself must be a plain object, and each top-level key
+must be valid UTF-16.
+
+For example, `{ n: NaN }` cannot be saved, because JSON writes `NaN` as
+`null`. `{ a: list, b: list }` cannot be saved when `list` is one array:
+after JSON, `a` and `b` are two arrays. A `Set` is the example below.
+
+The value `undefined` is an exception. Under a top-level key, Rolldown saves
+it and writes `undefined` back on reuse. Deeper inside a value, a property
+with the value `undefined` is left out, as JSON does. See
+[Caveats](#caveats).
+
+When a hook that has the cache on returns a value that cannot be saved,
+Rolldown saves no result for the module of that hook call, and prints the
+warning `PERSISTENT_CACHE_UNSAVABLE_META`. The other modules still get saved
+results.
+
+For example, a hook returns a `Set` in the meta:
+
+```js
+transform: {
+  cache: true,
+  handler(code, id) {
+    return { code, meta: { icons: new Set(['home', 'search']) } }
+  },
+}
+```
+
+JSON turns a `Set` into `{}`. If Rolldown saved this meta, a later hook
+would read `{}` after a restart, and `meta.icons.has('home')` would fail. So
+Rolldown saves no result for this module. Its hooks run again after every
+restart, and the meta is a `Set` each time. Rolldown prints one warning.
+
+The plugin can use a value that JSON keeps, such as an array:
+
+```js
+// Cannot be saved: JSON turns a Set into {}.
+return { code, meta: { icons: new Set(['home', 'search']) } }
+
+// Can be saved: JSON keeps an array.
+return { code, meta: { icons: ['home', 'search'] } }
+```
+
+With the array, the module gets a saved result, and a later hook reads
+`['home', 'search']` after a restart.
+
+**Warnings.** Rolldown prints `PERSISTENT_CACHE_UNSAVABLE_META` above, and
+`PERSISTENT_CACHE_MODULE_INFO` of
+[0003 Module info in cached hooks](0003-module-info-in-cached-hooks.md),
+once for each plugin and hook, also when many modules have the problem. The
+warning names the plugin, the hook, and the module of the first hook call
+with the problem. "Once" holds for one bundler:
+
+- A `rolldown()` bundle prints the warning again in each `generate` or
+  `write` call.
+- A watcher prints it once for each output, not again in each rebuild.
+- A dev engine prints it once.
+
+**Rust plugins.** A Rust plugin has its own meta for each module. It is
+separate from the meta of JavaScript plugins. A Rust plugin cannot read the
+meta that a JavaScript plugin set, and a JavaScript plugin cannot read the
+meta that a Rust plugin set.
+
+The two are separate for two reasons:
+
+- No plugin needs to read across the two sides in M1. The Rust plugins of
+  Vite do not read the meta of JavaScript plugins, and no JavaScript plugin
+  needs a value that a Rust plugin keeps for a module.
+- Sharing has a cost. The meta of JavaScript plugins is a JavaScript object,
+  which a plugin can keep and change. To share it, Rolldown must convert
+  every value between JavaScript and Rust when a plugin on the other side
+  reads it. With separate meta, a Rust plugin sets and reads its meta
+  without a call into JavaScript.
+
+A Rust plugin sets a value under a key, for a module. It can do this in a
+`resolveId`, `load` or `transform` hook, as a JavaScript plugin can. The
+module can be the module of the hook call or another module, for example the
+module that an import resolves to. By convention, the key is the name of the
+plugin. Any Rust plugin can read the value of any key, in any hook. A value
+is a sequence of bytes that the plugin makes, so Rolldown can always save it.
+
+```rust
+// In `transform`: a value for the module of this call.
+ctx.set_module_meta(args.id, "builtin:vite-reporter", vec![1]);
+
+// In `resolve_id`: a value for the module that the import resolves to.
+ctx.set_module_meta("/proj/src/b.ts", "my-plugin", bytes);
+
+// In any hook: read a value.
+let value = ctx.get_module_meta("/proj/src/b.ts", "my-plugin");
+```
+
+The names in this example are for reading only.
+
+Saving and reuse work as for JavaScript plugins. Rolldown saves the values
+in the saved result of the module whose task ran the hook. A new value
+replaces the earlier value under the same key of that module, and other
+keys stay as they are. On reuse, Rolldown sets each saved key again and does
+not touch the other keys.
+
+The meta of Rust plugins lives as long as the bundler. So in watch mode and
+in dev mode, a value can come from an earlier build. A Rust plugin can ask
+whether a value was set in this build, either by a hook or by a reuse.
+
+For example, Vite's reporter plugin sets a mark in `transform`, and in
+`build_end` it counts the modules of the build that have the mark. In the
+first build, `transform` runs for `a.ts` and sets the mark, and Rolldown
+saves it. After a restart with no changes, `transform` does not run for
+`a.ts`. Rolldown sets the mark from the saved result, and `build_end` counts
+`a.ts`. The count is the same as in a build without the cache.
+
 ### Side effects
 
 Status: `decided`.
@@ -682,6 +967,7 @@ does it again when it reuses the saved result:
 | Rolldown reads the module file from disk | Adds the file to the watched files, as [`load_source`][load_source] does today. |
 | Rolldown finds the tsconfig that governs the module | Adds the tsconfig to the watched files and to the [transform dependencies][td] of the module. |
 | `resolveId` finds no module | Gives the saved "not found" result to the code in [`resolve_dependencies`][not_found] that runs after resolution. It treats the import as external and prints the warning, as it does today. |
+| A Rust plugin sets its meta for a module | Sets the same value again. See [Module meta](#module-meta). |
 
 **The tsconfig of a module.** Steps that a restart skips read the tsconfig:
 `resolveId` reads its `paths`, and a `transform` hook can read its compiler
@@ -715,26 +1001,16 @@ of its hooks has the cache off. See
 [Which modules get a saved result](#which-modules-get-a-saved-result). In M1,
 it also gets none when a hook that has the cache on does one of these:
 
-- **A hook returns a `meta` value that is not empty.** `meta` never reaches
-  Rust. It lives only in a map on the JavaScript side
-  ([`moduleOptionMap`][optmap]), and it can hold values that cannot be
-  serialized.
-- **A JavaScript hook returns `moduleSideEffects`.** The value is also stored
-  in `moduleOptionMap`, where `this.getModuleInfo` reads it. Rolldown has no
-  call from Rust to JavaScript that writes this map, so this copy is missing
-  when the hook is skipped.
 - **A hook calls `this.load`.** The call runs the whole module task of
   another module and returns its `ModuleInfo`. The hook can use that
   information in its result, so the other module is an input that Rolldown
   does not track.
-- **A hook assigns to `moduleSideEffects` on an object from
-  `this.getModuleInfo`.** The assignment runs a setter on the JavaScript
-  side. The setter writes the value into `moduleOptionMap` and marks the
-  entry as changed. After the scan, Rust asks JavaScript for the marked
-  entries and applies them to the modules
-  ([`defer_sync_scan_data`][defer]). When the hook is skipped, the assignment
-  is missing. Vite's `vite:build-html` plugin does this in its `transform`
-  hook.
+- **A hook returns a meta value that cannot be saved.** See
+  [Module meta](#module-meta).
+- **A JavaScript hook uses `meta` or `moduleSideEffects` through module
+  info, or passes on a `moduleSideEffects` value that another module task
+  set.** See
+  [0003 Module info in cached hooks](0003-module-info-in-cached-hooks.md).
 - **A JavaScript hook sends a log that `JSON.stringify` cannot convert.**
   Rolldown saves the logs of a JavaScript plugin as JSON, so that it can send
   them to `onLog` again on reuse. `this.warn({ message: 'x', meta: { n: 1n } })`
@@ -749,8 +1025,30 @@ sourcemaps are both on, the sourcemap of a `transform` is
 module task. A result saved during the task would miss it. Rolldown does not
 use the persistent cache in this mode.
 
-[Future work](#future-work) lists a possible fix for each of the limits
-above.
+[Future work](#future-work) lists a possible fix for two of them: a hook
+that calls `this.load`, and `experimental.nativeMagicString`.
+
+**`undefined` deep inside meta.** Rolldown keeps `undefined` only under a
+top-level key. For example, `meta: { x: { a: undefined } }` comes back as
+`{ x: {} }` after a restart, so `'a' in meta.x` is `false`.
+
+**Meta values that change after a reuse without a warning.** Rolldown
+saves meta as JSON, so a reuse gives back plain data. In these cases the
+value is not the same as before, and Rolldown does not see it:
+
+- An object in the meta of two modules: after a reuse, each module has its
+  own copy. This also holds for one meta object that a hook returns for two
+  modules, when a hook changes it before the second module gets it. In the
+  other cases, such a module gets no saved result. See
+  [0003](0003-module-info-in-cached-hooks.md).
+- A getter: Rolldown saves the value that the getter returned once.
+- A frozen object: after a reuse, a later hook can change it.
+
+**A module that depends on a file that the build writes.** Such a module
+never reuses its saved result. Each restart adds one more saved result for
+it, until [`maxAge`](#removing-saved-results) removes it. It never reuses a
+wrong result. For example, a hook registers `reports/stats.json`, which
+every build writes again.
 
 **Modules whose id is not a file.** In M1, a module gets a saved result only
 when its id is the absolute path of a file that exists. Rolldown does not
@@ -804,7 +1102,10 @@ Two things are not settled for these modules:
 - A skipped hook can read values that Rolldown does not track, such as the
   result of `this.resolve`, the `ModuleInfo` of another module from
   `this.getModuleInfo`, or a file through `this.fs`. The host covers them. See
-  [What the host must guarantee](#what-the-host-must-guarantee).
+  [What the host must guarantee](#what-the-host-must-guarantee). A read of
+  `meta` or `moduleSideEffects` is the exception: it gives the module no
+  saved result. See
+  [0003 Module info in cached hooks](0003-module-info-in-cached-hooks.md).
 
 ### Open questions
 
@@ -816,27 +1117,7 @@ Two things are not settled for these modules:
 
 ### Future work
 
-1. **Let a plugin keep state across restarts through `meta`.**
-
-   - **Problem:** A plugin that keeps state in its own memory cannot turn the
-     cache on in M1. For example, `vite:css-post` keeps the compiled CSS in a
-     map for `renderChunk`. A hook that returns `meta` gets no saved result
-     either. See [Caveats](#caveats).
-   - **Possible fix:** The plugin puts the state that `renderChunk`,
-     `generateBundle`, and other later hooks need into `meta`, as values that
-     can be serialized. Rolldown saves `meta` with the result and restores it
-     on a restart. The plugin can then turn the cache on.
-   - **Milestone:** Not decided. It is not M1, and the sooner the better.
-
-2. **Restore `moduleSideEffects` on the JavaScript side.**
-
-   - **Problem:** A JavaScript hook that returns `moduleSideEffects` gets no
-     saved result in M1. See [Caveats](#caveats).
-   - **Possible fix:** Add a call from Rust to JavaScript that writes
-     `moduleOptionMap`. Rolldown can then restore the value on a restart. The
-     same call can restore `meta` for item 1.
-
-3. **Let a hook that calls `this.load` get a saved result.**
+1. **Let a hook that calls `this.load` get a saved result.**
 
    - **Problem:** A hook that calls `this.load` gets no saved result in M1.
      See [Caveats](#caveats).
@@ -844,15 +1125,7 @@ Two things are not settled for these modules:
      the calling module. Rolldown then does not reuse the saved result of the
      calling module when the loaded module changes.
 
-4. **Let a hook that assigns to `moduleSideEffects` get a saved result.**
-
-   - **Problem:** A hook that assigns to `moduleSideEffects` on an object from
-     `this.getModuleInfo` gets no saved result in M1. See [Caveats](#caveats).
-   - **Possible fix:** Save the assignment as a side effect of the calling
-     module, and apply it again on a restart. This needs the call from Rust to
-     JavaScript of item 2.
-
-5. **Use the persistent cache with `experimental.nativeMagicString`.**
+2. **Use the persistent cache with `experimental.nativeMagicString`.**
 
    - **Problem:** Rolldown does not use the persistent cache when this option
      and sourcemaps are both on. See [Caveats](#caveats).
@@ -872,8 +1145,8 @@ Two things are not settled for these modules:
 [pkg]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_resolver/src/resolver.rs#L113
 [refid]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/file_emitter.rs#L279
 [assoc]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_common/src/file_emitter.rs#L468
-[optmap]: https://github.com/rolldown/rolldown/blob/2842dcd7c/packages/rolldown/src/plugin/plugin-context-data.ts#L47
-[defer]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/module_loader/deferred_scan_data.rs#L10
+[meta-docs]: https://rolldown.rs/apis/plugin-api/inter-plugin-communication#custom-module-meta-data
+[parallel]: https://github.com/rolldown/rolldown/blob/4b4d7a0f1/packages/rolldown/src/parallel-plugin-worker.ts#L25
 [magic]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown/src/stages/scan_stage.rs#L241
 [glob-watch]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin_vite_import_glob/src/utils.rs#L675-L682
 [native-watch]: https://github.com/rolldown/rolldown/blob/2842dcd7c/crates/rolldown_plugin/src/plugin_context/native_plugin_context.rs#L220
@@ -1066,11 +1339,16 @@ may do it in another way.
 | `dir`: a directory under Vite's `cacheDir` | Nothing. It tells Rolldown where to keep the cache data. |
 | `buildDependencies`: the config file, the files it imports, and the files in the user's `experimental.cache.buildDependencies` | A change to the content of these files, including the source of functions in the config |
 | `buildDependencies`: the file that records the state of the installed packages, such as their versions, for example pnpm's `node_modules/.pnpm/lock.yaml` | A change to a package that the config file imports.<br>A change to a package that the user's code imports. |
-| `cacheKey`: a hash of the normalized config, the environment name, `process.env.NODE_ENV`, the Vite version, and the user's `experimental.cache.cacheKey` | A change to a normalized config value while the config file and the files it imports stay the same. CLI flags, inline config, mode, and environment variables that the config reads can cause such a change. |
+| `buildDependencies`: the PostCSS config file that Vite finds | A change to the PostCSS config. See [Vite](../meta-frameworks/vite.md#css). |
+| `cacheKey`: a hash of the normalized config, the environment name, `process.env.NODE_ENV`, the Vite version, the path of the PostCSS config file, and the user's `experimental.cache.cacheKey` | A change to a normalized config value while the config file and the files it imports stay the same. CLI flags, inline config, mode, and environment variables that the config reads can cause such a change.<br>A PostCSS config file that is created, removed, or found in another directory. |
 | `assumeUnchanged`: `**/node_modules/**` | Nothing. It is an optimization: Rolldown does not hash the files under `node_modules` one by one. It is safe when a package is installed, updated, or removed: the file that records the state of the installed packages is a build dependency, and it changes, so every module is a miss. It is not safe when a tool writes files into `node_modules` without installing a package. See below. |
 
 In Vite's own config, a user can set `experimental.cache` to `true`. Vite
 then builds the complete object that it passes to Rolldown.
+
+Vite passes these options to the build of each environment, not to the
+nested build of a worker. See
+[Worker builds](../meta-frameworks/vite.md#worker-builds).
 
 Vite hashes the normalized config with the same rules as the
 [options hash](#options-hash), so functions are skipped. To detect a change to
@@ -1094,6 +1372,9 @@ Vite cannot see every input in guarantee 1. The user covers the rest:
   config.
 - For a file that the config reads without importing it, such as with
   `fs.readFileSync`, the user adds it to `experimental.cache.buildDependencies`.
+- For a file that the PostCSS config imports, or that a PostCSS plugin reads
+  by itself, such as `.browserslistrc`, the user adds it to
+  `experimental.cache.buildDependencies`.
 
 #### Example: Rolldown CLI
 
@@ -1216,3 +1497,31 @@ and give the same output and required behavior as a build without the cache
     and a restart without it. Count the time to check, read, and write the
     cache. Expect that the restart with the cache is faster
     ([principle 2](../principles.md#2-caching-must-save-more-work-than-it-adds)).
+
+**Module meta.** In every case, a later hook must read the same values as in
+a build without the cache.
+
+1. Returned meta: A `transform` hook with the cache on returns `meta`.
+   Restart without a change. Expect that the hook does not run, and that
+   `renderChunk` reads the same meta.
+2. Meta from `resolveId`: A `resolveId` hook returns `meta` for `./b`.
+   Restart. Expect the same meta on `b.ts`.
+3. Returned `moduleSideEffects`: A `transform` hook returns
+   `moduleSideEffects: false`. Restart. Expect that
+   `this.getModuleInfo(id).moduleSideEffects` is `false`.
+4. A value that cannot be saved: A hook with the cache on returns a `Set` in
+   `meta` for `a.ts`, and an array for `b.ts`. Expect no saved result for
+   `a.ts`, a saved result for `b.ts`, and one
+   `PERSISTENT_CACHE_UNSAVABLE_META` warning.
+5. Rebuild in one process: In watch mode, change a module so that its hook
+   returns other keys. Expect the same meta as without the cache.
+6. Rust plugin: Build with Vite's reporter plugin and restart. Expect the
+   same count of transformed modules.
+
+**Hooks that are not cached.**
+
+1. Marked call: A JavaScript hook with the cache on calls
+   `this.markNotCacheable()` for `a.ts`. Restart. Expect that the hooks of
+   `a.ts` run again, and that the hooks of the other modules do not.
+2. Parallel plugin: A hook of a parallel plugin sets `cache: true`. Restart.
+   Expect that the hook runs again for every module that it is called for.

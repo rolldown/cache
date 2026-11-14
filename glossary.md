@@ -14,6 +14,7 @@ storage layout, record placement, or user-facing options.
 | **Assumed-unchanged path** | A path whose module files and transform dependencies Rolldown does not hash. It treats them as unchanged. The host declares it and must provide a build dependency that changes whenever these files change. |
 | **Cache hit** | Rolldown finds a saved result for a module and reuses it. It does not run the hooks that the saved result replaces. |
 | **Cache miss** | Rolldown finds no saved result for a module. It runs the hooks and saves a new result. |
+| **Module meta** | Data that a plugin attaches to one module, for other hooks to read. JavaScript plugins and Rust plugins have separate module meta. |
 
 Reuse limits are defined in [goals.md](goals.md). Open questions about local
 and global storage are recorded in [scratchpad.md](scratchpad.md).
