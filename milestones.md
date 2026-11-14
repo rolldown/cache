@@ -37,7 +37,8 @@ transform steps, or incremental computation in later build stages.
 - [ ] **Serialization and deserialization.** Save and restore the scan data and
   side-effect records needed to continue incremental builds. Choose which scan
   data to save based on performance measurements, while keeping build results
-  correct. Design: [Serialization](design-docs/0002-persistent-scan-cache.md#serialization).
+  correct. Design: [Serialization](design-docs/0002-persistent-scan-cache.md#serialization),
+  [Module info in cached hooks](design-docs/0003-module-info-in-cached-hooks.md).
 - [ ] **Scan dependency tracking, invalidation, and side effects.** Define and
   track the inputs needed to validate cached results after restarts, including
   changes made while Rolldown was stopped. Handle required side effects when
