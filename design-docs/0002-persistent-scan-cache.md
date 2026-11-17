@@ -2,7 +2,8 @@
 title: Persistent Scan Cache
 status: proposal
 created: 2026-11-04
-implementation: []
+implementation:
+  - https://github.com/rolldown/rolldown/pull/11671
 ---
 
 # Persistent scan cache
