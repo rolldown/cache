@@ -2,7 +2,8 @@
 title: Module Info in Cached Hooks
 status: proposal
 created: 2026-11-14
-implementation: []
+implementation:
+  - https://github.com/rolldown/rolldown/pull/11671
 ---
 
 # Module info in cached hooks
