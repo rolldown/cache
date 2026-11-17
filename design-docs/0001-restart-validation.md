@@ -2,7 +2,8 @@
 title: Restart Validation
 status: proposal
 created: 2026-10-31
-implementation: []
+implementation:
+  - https://github.com/rolldown/rolldown/pull/11671
 ---
 
 # Restart Validation
