@@ -4,8 +4,9 @@ Each feature links to its design doc and to the rolldown PRs that implement it.
 Mark a feature `(in progress)` while work is open, and check it when all its
 PRs have merged.
 
-M1 and M2 can be developed in parallel with shared design work. M2 depends on
-M1 being able to save and restore the cache correctly.
+M2 builds on M1, and the two can be developed together. M1 and M3 can be
+developed in parallel with shared design work. M3 depends on M1 being able to
+save and restore the cache correctly.
 
 ## M1: Persistent scan cache
 
@@ -32,7 +33,7 @@ transform steps, or incremental computation in later build stages.
 - [ ] **Persistent cache storage and incremental writes.** Define and implement
   the cache layout, stored data, and incremental write model for the original
   worktree. Cover interrupted writes, damaged data, and version compatibility.
-  Note where M2's sharing requirements are expected to change the storage
+  Note where M3's sharing requirements are expected to change the storage
   design. Design: [Storage and incremental writes](design-docs/0002-persistent-scan-cache.md#storage-and-incremental-writes).
 - [ ] **Serialization and deserialization.** Save and restore the scan data and
   side-effect records needed to continue incremental builds. Choose which scan
@@ -45,7 +46,36 @@ transform steps, or incremental computation in later build stages.
   incremental scope. Design: [Restart Validation](design-docs/0001-restart-validation.md),
   [Cache validity](design-docs/0002-persistent-scan-cache.md#cache-validity).
 
-## M2: Shared scan cache
+## M2: Plugin state and untracked inputs
+
+**Goal:** Let more modules reuse saved results after a restart, including
+modules whose hooks keep state that Rolldown cannot see, or depend on inputs
+that Rolldown does not track.
+
+**Done when:**
+
+- A module reuses its saved result only when the state and the inputs that it
+  depends on are the same as when the result was saved. Otherwise its hooks
+  run again.
+- After a restart, later hooks get the same data from a reused module as in a
+  build without the cache.
+- Benchmark projects reuse more modules after a restart than with M1 alone,
+  even after counting the time spent checking, loading, and updating the
+  cache.
+
+**Deliverables:**
+
+- [ ] **State that a plugin keeps on a module.** Track the data that a hook
+  attaches to its module for later hooks, so that a reused module gives the
+  later hooks the same data.
+- [ ] **State that crosses modules.** Track what a hook of one module reads
+  from or does for other modules, so that reusing one module does not lose
+  or break the result of another.
+- [ ] **Inputs that Rolldown does not track yet.** Track the inputs that a
+  module's result depends on and that Rolldown can observe by itself, other
+  than file contents, such as which files exist.
+
+## M3: Shared scan cache
 
 **Goal:** Reuse valid scan results across working directories, worktrees, and
 machines on the same platform for the same project, building on M1's persistent
@@ -80,44 +110,39 @@ cache.
   project with three worktrees working on non-overlapping features, comparing
   build times with and without shared caching.
 
-## M3: Incremental computation granularity and correctness
+## M4: Incremental computation granularity and correctness
 
-**Goal:** Improve build performance through caching of plugin computations during
-the scan stage, covering both Rust and JavaScript plugins. Explore dependency
-tracking and cache granularity while preserving correctness. The cache key API
-and whether to cache individual plugin hooks remain open design decisions.
+**Goal:** Make builds faster by caching plugin computations in the scan stage,
+for Rust and JavaScript plugins, without losing correctness. Explore cache
+granularity and hook cache keys. The cache key API and whether to cache single
+hooks are not decided.
 
 **Done when:**
 
-- When a plugin dependency changes, we must not reuse stale results. Recomputing
-  unnecessarily is OK; missing a change is not. If other bundlers also struggle
-  with certain dependencies, we can consider leaving those cases out of scope
-  for now, but we should explain which ones and why.
-- Caching plugin computations should make builds faster overall, including the
-  cost of tracking dependencies, computing cache keys, and checking, reading,
-  and writing the cache. Explore heuristics such as caching only when the input
-  exceeds a size threshold, while keeping other options open. Prefer automatic
-  decisions that don't require user configuration.
+- A changed plugin dependency never leads to a stale result. Running work again
+  without need is acceptable. A dependency that other bundlers also cannot
+  track may stay out of scope, with the reason written down.
+- Builds are faster overall, counting the cost of tracking dependencies,
+  computing cache keys, and using the cache. Prefer automatic decisions over
+  user configuration, such as caching only inputs above a size limit.
 
 **Deliverables:**
 
-- [ ] **Cache granularity.** Compare caching whole modules, caching individual
-  steps or plugin hooks, and using plugin-provided cache keys while still
-  caching whole modules. Use measurements to decide which approach works best,
-  considering both build time and cache size.
-- [ ] **Dependencies and cache key inputs.** Work out how plugins describe the
-  inputs their results depend on, such as files, environment variables, and
-  plugin options. Consider how meta-frameworks can supply additional cache key
-  information, including whether Vite or Rolldown project config should expose
-  a global `cacheKey`.
-- [ ] **Cache key computation.** Keep communication between JavaScript and Rust
-  low when computing cache keys. Explore options such as Handlebars-style
-  templates instead of callbacks.
+- [ ] **Cache granularity.** Compare caching whole modules, single steps or
+  hooks, and whole modules with hook cache keys. Decide by measured build time
+  and cache size.
+- [ ] **Hook cache keys.** Explore whether a plugin hook declares its own cache
+  key, and what the key holds, such as environment variables and plugin
+  options that only the plugin knows. Also decide whether such a key can
+  replace marking a call as not cacheable. Inputs that Rolldown can observe by
+  itself are part of [M2](#m2-plugin-state-and-untracked-inputs).
+- [ ] **Cache key computation.** Keep calls between JavaScript and Rust few when
+  computing cache keys, for example with templates instead of callbacks.
 
-## M4: Incremental reuse in link and generate
+## M5: Incremental reuse in link and generate
 
 **Goal:** Reduce rebuild time by reusing unaffected work in the link and generate
-stages, with persistent and shared caching as in M1 and M2. Use their
+stages, with persistent and shared caching as in M1 and M3. Use their
 implementation and performance measurements to select the scope; full incremental execution of both
 stages is not required.
 
@@ -127,19 +152,19 @@ stages is not required.
   as builds without caching, including after changes that affect multiple modules.
 - Computations that do not support caching still run normally and produce
   correct results.
-- Benchmark projects rebuild faster than with M2 alone, even after counting the
+- Benchmark projects rebuild faster than with M3 alone, even after counting the
   time spent checking, loading, and updating the new caches.
 
 **Deliverables:**
 
-- [ ] **Baseline and research.** Measure link and generate costs after M1 and M2 and
+- [ ] **Baseline and research.** Measure link and generate costs after M1 and M3 and
   investigate approaches to incremental reuse. Identify repeated work and the
   opportunities most likely to improve overall rebuild performance.
 - [ ] **Reuse boundaries and validation.** Design candidate computation and cache
   boundaries, including dependencies, invalidation, and required side effects.
   Test the proposed approaches and use the results to decide what to implement.
 - [ ] **Implementation and testing.** Implement the selected approach and check
-  whether it improves performance compared with M2.
+  whether it improves performance compared with M3.
 
 ## Template
 
