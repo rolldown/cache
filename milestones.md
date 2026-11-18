@@ -59,9 +59,8 @@ that Rolldown does not track.
   run again.
 - After a restart, later hooks get the same data from a reused module as in a
   build without the cache.
-- Benchmark projects reuse more modules after a restart than with M1 alone,
-  even after counting the time spent checking, loading, and updating the
-  cache.
+- After a restart, benchmark projects build faster than with M1 alone, even
+  after counting the time spent checking, loading, and updating the cache.
 
 **Deliverables:**
 
