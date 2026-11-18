@@ -79,7 +79,7 @@ This still relies on a sufficient precision estimate and does not detect content
 
 ## Future work
 
-- Directories. `this.addWatchFile` accepts a directory, and the file watcher watches everything below it. This design covers files only. How a directory is validated after a restart is not decided. See [rolldown/cache#14](https://github.com/rolldown/cache/issues/14) for the related `import.meta.glob` case.
+- Directories. `this.addWatchFile` accepts a directory, and the file watcher watches everything below it. This design covers files only. How a directory is validated after a restart is not decided. It is part of [M2](../milestones.md#m2-plugin-state-and-untracked-inputs). See [rolldown/cache#14](https://github.com/rolldown/cache/issues/14) for the related `import.meta.glob` case.
 - A timestamp check that skips hashing when `mtime` and `size` match, with webpack's `safeTime` rule for timestamp precision. It must be opt-in, because some writes keep the old `mtime` (verification case 5). Turning it on by default needs a way to show why a file or module was reused or not, for example a `cache inspect` command.
 - Platform-specific optimizations, such as using a saved FSEvents event ID on macOS to query changes since the previous run. This needs a fallback for when event history is unavailable or incomplete.
 
