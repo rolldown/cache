@@ -63,15 +63,34 @@ Rust plugins keep their meta in a separate store, with other rules. See
 Status: `proposed`.
 
 The cache must give the same values as a build without the cache, so it
-depends on these rules.
-[rolldown/rolldown#11792](https://github.com/rolldown/rolldown/pull/11792)
-changes Rolldown to follow them. They match Rollup, except for the
-differences listed at the end of this section. Here `meta` is the meta of
-JavaScript plugins. Rust plugins keep their meta in a separate store. See
-[Rust plugins](#rust-plugins).
+depends on the rules for these values in a build without the cache. The
+rules are defined in [Module meta and `moduleSideEffects` — Design][design],
+which [rolldown/rolldown#11792][pr-11792] adds to Rolldown. In short:
 
-The rules below use one example. The entry `main.js` imports `./a.js` and
-`./b.js`, and both of them import `./x.css`:
+- **[Creation][design-creation].** The creating resolution of a module is
+  the first resolution of its id that reaches the module loader in a build.
+  It sets the first `meta` of the module, as a top-level copy, and its first
+  `moduleSideEffects`. Later resolutions, `this.resolve`, and the options of
+  `this.load` for a module that exists do not change the module.
+- **[Hook results][design-hook-results].** Each object result of the
+  module's own `load` and `transform` hooks replaces `moduleSideEffects`
+  when its value is not `null` or `undefined`, and merges `meta` at the top
+  level.
+- **[Writes][design-writes].** Any hook can change the values through
+  `this.getModuleInfo(id)`. A write of `null` to `moduleSideEffects` clears
+  it.
+- **[Reading `moduleSideEffects`][design-reading-modulesideeffects].** A
+  read returns the decided value. When the value is not decided, it returns
+  the value from the `treeshake.moduleSideEffects` option, from
+  `package.json`, or `true`.
+- **[Lifetime][design-lifetime].** A full build starts every module with new
+  values. A partial scan starts each changed module again from its creating
+  resolution.
+
+## Example
+
+The rest of this document uses one example. The entry `main.js` imports
+`./a.js` and `./b.js`, and both of them import `./x.css`:
 
 ```js
 // main.js
@@ -117,300 +136,6 @@ flowchart TD
     S1 --> S2 --> S3 --> S4 --> T["tree shaking uses false"]
 ```
 
-### Creation
-
-Rolldown creates a module when a resolution of its id reaches the module
-loader for the first time in a build. A resolution reaches the module loader
-at one of these times:
-
-- the `resolveId` call of an entry: at the start of the build, after the
-  `resolveId` calls of all entries return and before any import;
-- the `resolveId` call of a chunk that a hook emits: when the call returns;
-- the `resolveId` or `resolveDynamicImport` call of an import: when the
-  module task of the importing module ends, together with the other imports
-  of that module;
-- a `this.load` call for an id that has no module yet: when the call is
-  made. Its `meta` and `moduleSideEffects` options are the values of this
-  resolution.
-
-The resolution that creates the module is its
-[creating resolution](../glossary.md). It sets two values:
-
-- `meta`: a copy of the `meta` object that the resolution returned. The copy
-  is a new object with the same keys. The values under the keys are not
-  copied.
-- `moduleSideEffects`: the value that the resolution returned, or "not
-  decided" when it returned none.
-
-For example, a `resolveId` hook returns `meta: returned`:
-
-```js
-const shared = { list: [] }
-const returned = { from: 'a.js', shared }
-
-getModuleInfo('/src/x.css').meta === returned       // false: a new object
-getModuleInfo('/src/x.css').meta.shared === shared  // true: the same value
-```
-
-Later resolutions of the same id, `this.resolve`, and the options of a
-`this.load` call for a module that exists do not change the module. A plugin
-should return the same values for the same id.
-
-In the example, the module task of `a.js` ends first, so its resolution of
-`./x.css` reaches the module loader first. It creates `x.css` with
-`{ from: 'a.js' }` (step 1). The resolution from `b.js` comes later, so
-`{ from: 'b.js' }` is not used (step 2). This holds also when the
-`resolveId` call in `b.js` returns before the one in `a.js`.
-
-### Hook results
-
-After the module is created, its own `load` and `transform` hooks can return
-the two values:
-
-- `load`: Rolldown calls the `load` hooks of the plugins in order, and uses
-  the first one that returns a result.
-- `transform`: Rolldown calls every `transform` hook in order. Each one gets
-  the code from the hook before it.
-
-Each of these results that is an object changes the values of the module:
-
-- `moduleSideEffects`: a value that is not `null` or `undefined` replaces the
-  current value. `null`, `undefined` or no key keeps the current value.
-- `meta`: Rolldown adds each key of the returned `meta` to the `meta` of the
-  module, as `Object.assign` does. A key replaces the whole value of the same
-  key. Values are not merged deeper. The `meta` of the module stays the same
-  object.
-
-A result that is a string has no `meta` and no `moduleSideEffects`, so it
-changes nothing.
-
-For example, the `meta` of a module is `{ from: 'a.js', opts: { x: 1 } }`, and
-a `transform` hook returns `meta: { opts: { y: 2 } }`. The `meta` becomes
-`{ from: 'a.js', opts: { y: 2 } }`. The key `x` is gone, because `opts` is
-replaced as a whole.
-
-In the example, the `transform` hook of `vite:css-post` returns
-`'no-treeshake'`, which replaces "not decided". It adds the key
-`'vite:css-post'` next to `from` (step 3).
-
-### Writes
-
-Any hook can change the values of any module through
-`this.getModuleInfo(id)`.
-
-**`meta`.** `getModuleInfo(id).meta` is the `meta` object of the module
-itself, so a hook changes the `meta` by changing its keys. Every later reader
-sees the change. A later `load` or `transform` result of the module merges
-into the same object, as [Hook results](#hook-results) says, so the written
-keys stay. For example, a `load` hook writes a key for `x.css` and returns
-nothing, and then `transform` returns `meta`:
-
-```js
-// a load hook, called for x.css
-this.getModuleInfo('/src/x.css').meta.checked = true
-// meta of x.css: { from: 'a.js', checked: true }
-
-// the transform hook of vite:css-post returns meta: { 'vite:css-post': '.x{}' }
-// meta of x.css: { from: 'a.js', checked: true, 'vite:css-post': '.x{}' }
-```
-
-Assigning a new object to the `meta` property does not change the module.
-Each `getModuleInfo` call returns a new info object, and its `meta` property
-points to the `meta` object of the module. An assignment only makes the
-`meta` property of that one info object point to another object:
-
-```js
-const info = this.getModuleInfo('/src/x.css')
-info.meta = { checked: false }
-info.meta.checked                               // false
-this.getModuleInfo('/src/x.css').meta.checked   // true: the module did not change
-```
-
-**`moduleSideEffects`.** A hook can assign `true`, `false`, `'no-treeshake'`,
-`null` or `undefined`. Another value throws. `true`, `false` or
-`'no-treeshake'` replaces the current value. The value stays until a later
-write, or until a later `load` or `transform` hook of the module returns a
-value that is not `null` or `undefined`. `null` or `undefined` clears the
-value, and Rolldown treats the module as if no hook had decided it. It does
-not go back to a value that a hook returned before the write.
-[Reading `moduleSideEffects`](#reading-modulesideeffects) says what Rolldown uses then.
-
-Tree shaking uses the writes that are made up to the end of `buildEnd`. A
-write in a later hook, such as `renderChunk`, does not change tree shaking.
-
-In the example, `buildEnd` writes `false`, and tree shaking uses `false`
-(step 4). If it wrote `null`, the value would be "not decided" again.
-Rolldown would not go back to the `'no-treeshake'` from `transform`, and
-[Reading `moduleSideEffects`](#reading-modulesideeffects) would give `true`.
-
-### Reading `moduleSideEffects`
-
-A hook can read `getModuleInfo(id).moduleSideEffects` from the time the
-module is created, so the `load` hook of the module can already read it. It
-returns the value that tree shaking starts from.
-
-When the module is created, its value is the one that the creating
-resolution returned, as [Creation](#creation) says. After that, each hook
-result and each write can change it, as [Hook results](#hook-results) and
-[Writes](#writes) say. The value is "not decided" when none of them gave a
-value, or when a write of `null` or `undefined` cleared it and nothing gave
-a value after that.
-
-`getModuleInfo(id).moduleSideEffects` never returns "not decided". When the
-value is "not decided", a read returns a value from the
-`treeshake.moduleSideEffects` option, from `package.json`, or `true`
-instead. A read does not change the value, and it does not check the code of
-the module.
-
-Rolldown checks these sources in order, and stops at the first one that
-gives a value:
-
-```mermaid
-flowchart LR
-    H{"is the value decided?"} -- yes --> HV["that value"]
-    H -- no --> O{"1. the option gives<br/>true or false?"}
-    O -- yes --> OV["that value"]
-    O -- no --> P{"2. package.json gives<br/>true or false?"}
-    P -- yes --> PV["that value"]
-    P -- no --> T["3. true"]
-```
-
-First, if the value is decided, a read returns it. Only when it is "not
-decided", Rolldown checks items 1, 2 and 3 in this order, and uses the first
-one that gives `true` or `false` for the id:
-
-1. The `treeshake.moduleSideEffects` option:
-   - `true`, which is the default, gives nothing for any id. So with the
-     default, Rolldown goes on to item 2.
-   - `false` gives `false` for every id.
-   - An array of ids gives `true` for an id in the array, and `false` for
-     any other id.
-   - A list of rules gives the value of the first rule that matches the id,
-     and nothing when no rule matches.
-   - A function gives what it returns, and nothing when it returns `null` or
-     `undefined`.
-2. The `sideEffects` field of the module's `package.json`. Rolldown reads it
-   only for a normal module whose `package.json` it knows: Rolldown's
-   resolver found it, or a `resolveId` hook returned `packageJsonPath`. The
-   field gives nothing when it says nothing about the path of the module.
-3. `true`.
-
-The value is the input of tree shaking, not its result. For example, `true`
-from item 3 means that tree shaking checks the statements of the module.
-
-In two cases, when the value is "not decided", a read of
-`getModuleInfo(id).moduleSideEffects` returns `true`, but tree shaking does
-not use that `true`:
-
-- With `treeshake: false`, Rolldown does not check items 1 and 2. Although a
-  read returns `true`, tree shaking is off, and Rolldown keeps every module.
-- For an external Node.js built-in, such as `node:fs`, when the option gives
-  nothing: although a read returns `true`, tree shaking treats the module as
-  having no side effects. So `import 'node:fs'` is removed when nothing from
-  it is used.
-
-In the example, the `resolveId` hook in step 1 returns no
-`moduleSideEffects`, so `x.css` starts as "not decided". A hook that reads
-`getModuleInfo('/src/x.css').moduleSideEffects` between step 1 and step 3
-gets `true`. Vite does not set the `treeshake.moduleSideEffects` option, so
-the option has the default `true` and gives nothing. Rolldown knows no
-`package.json` for `x.css`, because the plugin returned the id without
-`packageJsonPath`. After step 3 a read returns `'no-treeshake'`, and after
-step 4 it returns `false`.
-
-### Lifetime
-
-What happens to the values in the next build depends on the kind of build.
-
-**A full build** drops the values of every module before `buildStart`. Each
-module is then created again, as [Creation](#creation) says. These builds
-are full builds:
-
-- a `rolldown()` build;
-- each rebuild in watch mode, unless `experimental.incrementalBuild` is on;
-- the first build of a dev engine.
-
-**A partial scan** runs the hooks again only for the modules that changed.
-It is used for an HMR update, and for a rebuild with
-`experimental.incrementalBuild`.
-
-Before the hooks run, each changed module goes back to the values that its
-creating resolution gave. Rolldown kept these values when it created the
-module. It does not use the result of a new `resolveId` call for them. For
-an HMR update, it does not call `resolveId` for the changed module. For an
-incremental rebuild, it calls `resolveId` again for the id of the changed
-module, without an importer, but it does not use the `meta` or
-`moduleSideEffects` of that call. So:
-
-- `meta` becomes a new copy of the `meta` of the creating resolution. Keys
-  that hooks wrote, and keys that the last `load` and `transform` results
-  added, are gone.
-- `moduleSideEffects` becomes the value of the creating resolution again,
-  and a value that a hook wrote is dropped.
-
-Then the `load` and `transform` hooks of the module run again and apply
-their results, as [Hook results](#hook-results) says. The modules that did
-not change keep their values, also the values that writes gave them.
-
-**A lazy compile** creates the real module of a lazily imported module. It
-resolves the original import again, and that resolution creates the module,
-as [Creation](#creation) says.
-
-In the example, `x.css` changes during dev. An HMR update starts a partial
-scan for `x.css` only:
-
-1. `x.css` goes back to the values of the resolution from `a.js`. Its `meta`
-   becomes `{ from: 'a.js' }`, and its `moduleSideEffects` becomes "not
-   decided". The old CSS under `'vite:css-post'`, and the `false` that
-   `buildEnd` wrote, are gone.
-2. The `transform` hook of `vite:css-post` runs again. It adds the new CSS
-   under `'vite:css-post'`, and sets `moduleSideEffects` to `'no-treeshake'`.
-
-`a.js` and `b.js` did not change. Their hooks do not run again, and their
-values stay as they are.
-
-### Differences from Rollup
-
-The rules above match Rollup, except in these points.
-
-**Which importer creates the module.** In Rolldown, the importer whose
-module task ends first creates the module. In Rollup, the resolution that
-ends first creates it. In the example, if the `resolveId` call in `b.js`
-returns before the one in `a.js`, Rollup creates `x.css` with
-`{ from: 'b.js' }`. Rolldown still creates it with `{ from: 'a.js' }`,
-because the module task of `a.js` ends first.
-
-**`this.resolve` when no hook decided `moduleSideEffects`.** Rolldown returns
-`null`. Rollup returns the value of the `treeshake.moduleSideEffects` option
-for the id, which is `true` by default. For example,
-`this.resolve('./x.css', '/src/a.js')` returns `moduleSideEffects: null` in
-Rolldown, and `true` in Rollup. Rolldown reads `package.json` `sideEffects`
-only when the value is `null`. Some plugins return a `this.resolve` result
-as their own `resolveId` result. If `this.resolve` returned `true`, these
-plugins would turn the `package.json` check off.
-
-**`package.json` in a read.** In Rolldown, a read of
-`getModuleInfo(id).moduleSideEffects` can return the value of the
-`package.json` `sideEffects` field, as
-[Reading `moduleSideEffects`](#reading-modulesideeffects) says. Rollup's
-core does not read `package.json`. For a module whose `package.json` has
-`"sideEffects": false`, a read returns `false` in Rolldown and `true` in
-Rollup.
-
-**A write of `null`.** In Rolldown, a write of `null` clears the value, and
-tree shaking uses the value from items 1 to 3. Rollup stores `null`, a read
-returns `null`, and tree shaking treats it as `false`. In the example, if
-`buildEnd` wrote `null`, a read would return `true` in Rolldown and `null`
-in Rollup.
-
-**When a write reaches tree shaking.** In Rolldown, tree shaking uses the
-writes made up to the end of `buildEnd`, both `true` and `false`. Later
-writes do not change tree shaking, because Rolldown links the modules before
-the output hooks run. In Rollup, a `false` written as late as `renderStart`
-still removes code. But a `true` written in `buildEnd` or later does not
-bring removed code back. In the example, the `false` in `buildEnd` reaches
-tree shaking in both.
-
 ## Saving and reuse
 
 Status: `proposed`.
@@ -432,7 +157,7 @@ module. See
   because the call runs in its module task.
 - **The module's own hook results.** Rolldown saves the `meta` that the
   module's own `load` and `transform` hooks returned, merged as
-  [Hook results](#hook-results) says. It also saves the last
+  [Hook results][design-hook-results] says. It also saves the last
   `moduleSideEffects` value of these hooks that is not `null` or
   `undefined`, or "none" when there is no such value.
 
@@ -451,7 +176,7 @@ In the example, the first build saves these values:
 The resolve result of `b.js` is saved, although it did not create `x.css`.
 Its values do not go into the values of `x.css`, or into the saved result of
 `x.css`, because only the resolution that creates a module sets its values,
-as [Creation](#creation) says.
+as [Creation][design-creation] says.
 
 The `false` that `buildEnd` wrote is not saved. `buildEnd` is not part of a
 module task, so it runs again after every restart and writes `false` again.
@@ -467,12 +192,12 @@ hooks. Rolldown applies the saved values in the order of the rules:
    reused module ends, at the same time as a resolution that a hook returned
    would. If the saved resolve result is the first resolution of the
    imported id to reach the module loader, it creates the imported module,
-   as [Creation](#creation) says. The imported module then starts with the
+   as [Creation][design-creation] says. The imported module then starts with the
    saved `meta` and `moduleSideEffects`. If the imported module already
    exists, the saved resolve result does not change it.
 2. **Hook results.** If the imported module also reuses its saved result,
    Rolldown applies its saved own hook results, as
-   [Hook results](#hook-results) says. It merges the saved `meta` into the
+   [Hook results][design-hook-results] says. It merges the saved `meta` into the
    `meta` of the module. The saved `moduleSideEffects` replaces the value,
    unless it is "none".
 3. **Writes.** Hooks that are not part of a module task, such as `buildEnd`,
@@ -573,7 +298,7 @@ read of it. The host covers it, as
 Rolldown saves the `meta` that a hook returns as JSON, one entry for each
 top-level key. This holds for `resolveId`, `resolveDynamicImport`, `load`
 and `transform`. The module keeps a top-level copy of the returned `meta`,
-as [Creation](#creation) and [Hook results](#hook-results) say. So only the
+as [Creation][design-creation] and [Hook results][design-hook-results] say. So only the
 keys count, and the returned object itself can be of any kind, such as an
 instance of a class.
 
@@ -712,7 +437,7 @@ pass the check:
 
 1. **Which importer creates a module after a restart.** In a build without
    the cache, the importer whose module task ends first creates the module,
-   as [Creation](#creation) says. After a restart, a reused importer does not
+   as [Creation][design-creation] says. After a restart, a reused importer does not
    run its hooks, so its module task can end at another time than in a
    build without the cache. Then another importer can create the module.
    When a plugin returns other values for the same id to other importers,
@@ -790,3 +515,10 @@ in `buildEnd`, and the output after tree shaking, must be the same.
     ([principle 2](../principles.md#2-caching-must-save-more-work-than-it-adds)).
 
 [meta-docs]: https://rolldown.rs/apis/plugin-api/inter-plugin-communication#custom-module-meta-data
+[design]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md
+[design-creation]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#creation
+[design-hook-results]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#hook-results
+[design-writes]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#writes
+[design-reading-modulesideeffects]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#reading-modulesideeffects
+[design-lifetime]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#lifetime
+[pr-11792]: https://github.com/rolldown/rolldown/pull/11792
