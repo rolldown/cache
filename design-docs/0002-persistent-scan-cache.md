@@ -1023,8 +1023,10 @@ plugins as unchanged, and the caller is responsible for them.
 #### Example: Vite
 
 Status: `proposed`. This is one way for a host to meet the guarantees. It
-does not meet guarantee 2 in one case, which is described below. Other hosts
-may do it in another way.
+does not meet guarantee 2 in one case, which is described below. It does not
+meet guarantee 1 for the files that a CSS tool reads by itself. See
+[Vite](../meta-frameworks/vite.md#files-that-vite-cannot-register).
+Other hosts may do it in another way.
 
 | Vite passes | What it covers |
 | --- | --- |

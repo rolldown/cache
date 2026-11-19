@@ -392,35 +392,46 @@ change, `transform` does not run. Rolldown makes the saved
 `set_module_meta` call again, so the mark is set in this build, and the
 count is the same as in a build without the cache.
 
-**Reads.** Rolldown does not track a read of the store with
-`get_module_meta`. When a cached hook reads the meta of
-another module, the module of the hook call still gets a saved result. When
-the other module changes later, this saved result can be out of date. For
-example, the `transform` hook of `a.js` reads a mark from the meta of
-`x.css`, and uses it in the code of `a.js`. Then the mark of `x.css`
-changes, but `a.js` does not. `a.js` reuses its saved result, with the code
-for the old mark. For JavaScript plugins, such a read gives the module no
-saved result. See [Use through module info](#use-through-module-info).
+**Reads.** Rolldown does not track a read of the store, such as a call to
+`get_module_meta`. A cached hook that reads the meta of another module still
+gives its module a saved result. See [Caveats](#caveats).
 
 ## Caveats
 
 In these cases, a later hook can get other values than in a build without
 the cache. This breaks
 [principle 1](../principles.md#1-caching-must-preserve-correctness). The
-reason is that Rolldown cannot see these cases when it saves the result.
+reason is that Rolldown does not track these cases when it saves the result.
 
-**A use of module info that Rolldown does not see.** Rolldown sees a use of
+**A use of module info after the hook call ended.** Rolldown sees a use of
 `meta` or `moduleSideEffects` through module info only in the hook call that
 got the info object. See [Use through module info](#use-through-module-info).
-In these cases, Rolldown does not see the use, and the module keeps its
-saved result:
+A plugin can keep the info object, and use it after the hook call ended, for
+example in `queueMicrotask` or in a hook call for another module. Rolldown
+does not see that use, and the module keeps its saved result.
 
-- A plugin keeps the info object, and uses it after the hook call ended. For
-  example, it uses the object in `queueMicrotask`, or in a hook call for
-  another module.
-- A Rust plugin reads `moduleSideEffects` from the `side_effects` field of
-  the info that `get_module_info` returns. Rolldown sees only the calls
-  `get_module_side_effects` and `set_module_side_effects`.
+**A Rust hook that reads meta or `moduleSideEffects` without a tracked
+call.** Rolldown tracks a read of `moduleSideEffects` only through
+`get_module_side_effects`, and it does not track a read of the meta of Rust
+plugins. So a cached Rust hook still gives its module a saved result when
+it does one of these:
+
+- It reads the meta of another module, such as with `get_module_meta`.
+- It reads `moduleSideEffects` from the `side_effects` field of the info
+  that `get_module_info` returns.
+
+When the value changes later, this saved result can be out of date. For
+example, the `transform` hook of `a.js` reads a mark from the meta of
+`x.css`, and uses it in the code of `a.js`. Then the mark of `x.css`
+changes, but `a.js` does not. `a.js` reuses its saved result, with the code
+for the old mark. For JavaScript plugins, both reads give the module no saved
+result. See [Use through module info](#use-through-module-info).
+
+The Rust plugins are part of Rolldown, so these cases are under the control
+of Rolldown. No Rust plugin does either in a cached hook today. Vite's
+reporter plugin reads meta only in `module_parsed` and `build_end`, and the
+bundle analyzer reads module info only in `generate_bundle`. These hooks are
+not cached hooks.
 
 **An object that the `meta` of two modules holds.** Rolldown checks each
 `meta` value before it saves it. See

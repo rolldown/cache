@@ -376,30 +376,37 @@ with such a warning gets no saved result. See [CSS](#css). But a plugin can
 also print to the console directly, and Vite cannot see such a message. A
 module that reuses its saved result does not print it again.
 
-### Files that Vite does not watch
+### Files that Vite cannot register
 
-A CSS module can depend on a file that Vite does not watch, so the file is
-not a transform dependency of the module. A rebuild without the cache does
-not see a change to such a file: in `vite build --watch`, in bundled dev
-and in dev, the output keeps the old content until a file that Vite watches
-changes. The cache does the same: the module reuses its saved result after a
-restart.
+A CSS module can depend on a file that Vite cannot register as a transform
+dependency. Then the cache does not know that the module depends on the
+file. When the file changes, or is created, while Rolldown is stopped, the
+module still reuses its saved result. There are two kinds of such files:
 
-These files are:
-
-- the files that Less reads by itself for `data-uri()`, `image-size()`,
-  `image-width()`, `image-height()` and `@import (inline)`;
-- a new file in a directory that a PostCSS plugin reports, or a new file
-  that matches a glob that lightningcss reports;
-- a file that a `url()` points to and that is created later;
-- the files that Stylus finds and reads by itself, such as a new file that
-  matches a glob `@import` or a file that `json()` reads.
+- **Files that a CSS tool reads by itself, and does not report to Vite.**
+  For these files, Vite does not meet
+  [guarantee 1](../design-docs/0002-persistent-scan-cache.md#what-the-host-must-guarantee)
+  of the host. A fix needs the tool to report the files that it reads.
+  - the files that Less reads for `data-uri()`, `image-size()`,
+    `image-width()`, `image-height()` and `@import (inline)`;
+  - the files that Stylus finds and reads by itself, such as a new file that
+    matches a glob `@import` or a file that `json()` reads.
+- **Files that do not exist yet.** Vite knows the directory or the path, but
+  the cache does not check which files exist. This is part of
+  [M2](../milestones.md#m2-plugin-state-and-untracked-inputs).
+  - a new file in a directory that a PostCSS plugin reports, or a new file
+    that matches a glob that lightningcss reports;
+  - a file that a `url()` points to and that is created later.
 
 For example, `style.less` has `width: image-width('./logo.png')`, and the
 build gives `10px`. A user replaces `logo.png` with an image that is 20px
 wide, and restarts. `style.less` did not change, so it reuses its saved
 result, and the output still has `10px`. After a change to `style.less`,
 the output has `20px`.
+
+Vite does not watch these files either. So a rebuild without the cache, in
+`vite build --watch`, in bundled dev and in dev, also keeps the old content
+until a file that Vite watches changes.
 
 ### Functions of the user in CSS options
 
