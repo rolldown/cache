@@ -238,6 +238,29 @@ of the module to JavaScript in one call. JavaScript makes the copy and
 merges the own `meta` into it. So no hook can read the `meta` of the module
 before the saved own `meta` is merged.
 
+### One object in the meta of several modules
+
+Rolldown does not support one object that the `meta` of several modules
+holds. A cached hook must give each module its own object. Rolldown does not
+check this rule. Each module saves its own copy of its `meta`. So after a
+restart, when the modules reuse their saved results, they hold different
+objects.
+
+For example, a plugin creates one `icons` array, and its cached `transform`
+hook returns it in the `meta` of `a.js` and of `x.css`. Without the cache,
+both modules hold this one array, and a change through `a.js` also shows
+through `x.css`. After a restart, when `a.js` and `x.css` reuse their saved
+results, each module has its own copy, and the change shows only through
+`a.js`. So the hook must return a new array for each module, such as
+`meta: { icons: [...icons] }`. To change the value for several modules, a
+later hook, such as `buildEnd`, changes the `meta` of each module:
+
+```js
+for (const id of ['/src/a.js', '/src/x.css']) {
+  this.getModuleInfo(id).meta.icons.push('search')
+}
+```
+
 ## When a module gets no saved result
 
 Status: `proposed`.
@@ -432,15 +455,6 @@ of Rolldown. No Rust plugin does either in a cached hook today. Vite's
 reporter plugin reads meta only in `module_parsed` and `build_end`, and the
 bundle analyzer reads module info only in `generate_bundle`. These hooks are
 not cached hooks.
-
-**An object that the `meta` of two modules holds.** Rolldown checks each
-`meta` value before it saves it. See
-[Values that cannot be saved](#values-that-cannot-be-saved). The check looks
-at one `meta` at a time, so it does not see an object that the `meta` of two
-modules holds. After a reuse, each module has its own copy. For example, a
-hook returns the same `icons` array in the `meta` of `a.js` and of `x.css`.
-After a reuse, a change to the array of `a.js` does not change the array of
-`x.css`.
 
 ## Open questions
 
