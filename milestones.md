@@ -38,8 +38,7 @@ transform steps, or incremental computation in later build stages.
 - [ ] **Serialization and deserialization.** Save and restore the scan data and
   side-effect records needed to continue incremental builds. Choose which scan
   data to save based on performance measurements, while keeping build results
-  correct. Design: [Serialization](design-docs/0002-persistent-scan-cache.md#serialization),
-  [Module info in cached hooks](design-docs/0003-module-info-in-cached-hooks.md).
+  correct. Design: [Serialization](design-docs/0002-persistent-scan-cache.md#serialization).
 - [ ] **Scan dependency tracking, invalidation, and side effects.** Define and
   track the inputs needed to validate cached results after restarts, including
   changes made while Rolldown was stopped. Handle required side effects when
@@ -67,10 +66,13 @@ that Rolldown does not track.
 
 - [ ] **State that a plugin keeps on a module.** Track the data that a hook
   attaches to its module for later hooks, so that a reused module gives the
-  later hooks the same data.
+  later hooks the same data. Design: [Module meta and `moduleSideEffects`](design-docs/0003-module-meta-and-module-side-effects.md).
 - [ ] **State that crosses modules.** Track what a hook of one module reads
   from or does for other modules, so that reusing one module does not lose
-  or break the result of another.
+  or break the result of another. Design for `meta` and `moduleSideEffects`:
+  [When a module gets no saved result](design-docs/0003-module-meta-and-module-side-effects.md#when-a-module-gets-no-saved-result).
+  A hook that calls `this.load`: [0002 Future work](design-docs/0002-persistent-scan-cache.md#future-work).
+  Other reads are not designed yet.
 - [ ] **Inputs that Rolldown does not track yet.** Track the inputs that a
   module's result depends on and that Rolldown can observe by itself, other
   than file contents, such as which files exist.

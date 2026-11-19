@@ -15,6 +15,10 @@ storage layout, record placement, or user-facing options.
 | **Cache hit** | Rolldown finds a saved result for a module and reuses it. It does not run the hooks that the saved result replaces. |
 | **Cache miss** | Rolldown finds no saved result for a module. It runs the hooks and saves a new result. |
 | **Module meta** | Data that a plugin attaches to one module, for other hooks to read. JavaScript plugins and Rust plugins have separate module meta. |
+| **Module task** | The work of the scan stage for one module: `load`, `transform`, parsing, and the `resolveId` or `resolveDynamicImport` call of each import of the module. |
+| **Saved result** | What Rolldown saves for one module under key 1 and key 2 of the persistent scan cache. On a cache hit, Rolldown reuses it as a whole. See [0002](design-docs/0002-persistent-scan-cache.md#what-a-saved-result-holds). |
+| **Cached hook** | A plugin hook that has the persistent scan cache on: it sets `cache: true`, or the host turns the cache on for it with `assumeCacheableHooks`. |
+| **Creating resolution** | The resolution of a module id that reaches Rolldown's module loader first in a build. It creates the module and sets its first `meta` and `moduleSideEffects`. See [0003 Creation](design-docs/0003-module-meta-and-module-side-effects.md#creation). |
 
 Reuse limits are defined in [goals.md](goals.md). Open questions about local
 and global storage are recorded in [scratchpad.md](scratchpad.md).

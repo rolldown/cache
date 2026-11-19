@@ -24,11 +24,11 @@ plugins are Rust plugins in Rolldown (`crates/rolldown_plugin_vite_*`).
 | `viteResolvePlugin` (native) | `resolveId`, `load` | A call makes the module not cacheable when it sends a warning or a debug log to Vite's logger, or when it calls `finalizeBareSpecifier` or `finalizeOtherSpecifiers`. Rolldown cannot send these logs again, and the two callbacks return ids that depend on Vite's dependency optimizer. Vite passes the two callbacks only to dev without bundling, and the debug callback only with `DEBUG=vite:resolve-details`. See [Debug logs in cached hooks](#debug-logs-in-cached-hooks). |
 | `viteDynamicImportVarsPlugin` (native) | `resolveId`, `load`, `transform` | A call to Vite's JavaScript resolver makes the module not cacheable: Rolldown cannot see its inputs. |
 | `viteTransformPlugin` (native) | `transform` | It registers the tsconfig that it reads. |
-| `viteReporterPlugin` (native) | `transform` | It sets a mark in the meta of the module. See [The count of transformed modules](#the-count-of-transformed-modules). |
+| `viteReporterPlugin` (native) | `transform` | It sets a mark in the meta of the module. This needs [0003](../design-docs/0003-module-meta-and-module-side-effects.md), part of M2. See [The count of transformed modules](#the-count-of-transformed-modules). |
 | `vite:bundled-dev-client-imports` | `resolveId`, `load` | |
 | `vite:html-inline-proxy` | `resolveId` | |
 | `vite:css` | `load`, `transform` | In some cases a `transform` call makes the module not cacheable. See [CSS](#css). |
-| `vite:css-post` | `transform` | It returns the CSS of the module as module meta. `renderChunk` reads the CSS from there. |
+| `vite:css-post` | `transform` | It returns the CSS of the module as module meta, which needs [0003](../design-docs/0003-module-meta-and-module-side-effects.md), part of M2. `renderChunk` reads the CSS from there. |
 | `vite:wasm-helper` | `resolveId`, `transform` | |
 | `vite:asset` | `resolveId` | |
 | `vite:esbuild-banner-footer-compat` | `transform` | |
@@ -42,7 +42,7 @@ not tracked. See [Caveats](../design-docs/0002-persistent-scan-cache.md#caveats)
 | Plugin | Hook | Why |
 | --- | --- | --- |
 | `viteImportGlobPlugin` (native) | `transform` | The files in a globbed directory are not tracked ([rolldown/cache#14](https://github.com/rolldown/cache/issues/14)). In dev, `hotUpdate` reads what it stores. A hook filter makes only modules with `import.meta.glob` count. In dev, `moduleParsed` removes what it stored for a module that reused its saved result. |
-| `vite:build-html` | `transform` | It keeps the HTML and the code of inline scripts and styles in its own memory for later hooks. When the entry script of a `<script type="module" src>` is not loaded yet, it loads it with `this.load` and `moduleSideEffects: true`. Then a cached JavaScript hook of the entry script that returns an object without `moduleSideEffects` gives the entry script no saved result. See [`moduleSideEffects`](../design-docs/0003-module-info-in-cached-hooks.md#modulesideeffects). It runs the `transformIndexHtml` hooks of other plugins, which Rolldown cannot see. |
+| `vite:build-html` | `transform` | It keeps the HTML and the code of inline scripts and styles in its own memory for later hooks. It calls `this.load` for the entry script of a `<script type="module" src>`, which gives no saved result (see [Caveats](../design-docs/0002-persistent-scan-cache.md#caveats)). It runs the `transformIndexHtml` hooks of other plugins, which Rolldown cannot see. |
 | `vite:html-inline-proxy` | `load` | It reads the code that `vite:build-html` keeps in its memory. Only ids with a query reach it, and such ids get no saved result in M1. |
 | `vite:worker-import-meta-url` | `transform` | It bundles the worker file in a nested build. The saved result of one module cannot stand for all modules of that build. See [Worker builds](#worker-builds). |
 | `vite:worker` | `load`, `transform` | Only ids with a query reach them, and such ids get no saved result in M1. `load` also bundles the worker in a nested build. See [Worker builds](#worker-builds). |
@@ -61,9 +61,8 @@ compiled CSS of each module. The `transform` hook returns it as module meta,
 under the key `vite:css-post`, and `renderChunk` reads it with
 `this.getModuleInfo(id).meta`.
 
-The key is the name of the plugin, not `vite`. Rolldown merges a returned
-`meta` only at the top level: a key replaces the whole value of the same
-key. Other plugins set `meta.vite.cssScopeTo` for the same module, and
+The key is the name of the plugin, not `vite`. A returned `meta` merges
+only at the top level ([Hook results](../design-docs/0003-module-meta-and-module-side-effects.md#hook-results)). Other plugins set `meta.vite.cssScopeTo` for the same module, and
 `renderChunk` reads it. If `vite:css-post` returned
 `meta: { vite: { css } }`, it would remove `cssScopeTo`.
 
@@ -197,7 +196,7 @@ number must be the same with and without the cache. But `transform` does not
 run for a module that reuses its saved result, so the plugin cannot count
 the `transform` calls.
 
-It uses [module meta](../design-docs/0002-persistent-scan-cache.md#module-meta)
+It uses [module meta](../design-docs/0003-module-meta-and-module-side-effects.md)
 instead. In `transform`, the plugin sets a mark in the meta of the module.
 Rolldown saves the mark with the saved result, and sets it again on reuse.
 In `buildEnd`, the plugin counts the modules of the build that have the
