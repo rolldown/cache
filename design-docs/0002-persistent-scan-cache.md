@@ -532,7 +532,10 @@ its own, so that only B runs, is not part of M1. See
 **Marking one call.** A plugin that has the cache on can mark one hook call.
 Rolldown then saves no result for the module of that call. The other modules
 still get saved results. A Rust plugin calls `ctx.mark_not_cacheable()`. A
-JavaScript plugin calls `this.markNotCacheable()`.
+JavaScript plugin calls `this.markNotCacheable()`. The JavaScript call is an
+internal and experimental API for the cache. The hook keeps the cache on,
+and the call tells Rolldown not to save a result for the module of this
+call. The API can change or be removed when the design of the cache changes.
 
 For example, the resolve plugin of Vite (`viteResolvePlugin`) has the cache on
 for `resolveId`. In dev, it can send a warning to a JavaScript callback of Vite
