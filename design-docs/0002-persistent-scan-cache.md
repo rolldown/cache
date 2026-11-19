@@ -2,7 +2,8 @@
 title: Persistent Scan Cache
 status: proposal
 created: 2026-11-04
-implementation: []
+implementation:
+  - https://github.com/rolldown/rolldown/pull/11671
 ---
 
 # Persistent scan cache
@@ -50,11 +51,11 @@ Out of scope:
 
 - New cache boundaries inside the scan stage with their own keys and
   invalidation rules, such as a separate cache for `resolveId` results. See
-  [M3](../milestones.md#m3-incremental-computation-granularity-and-correctness).
+  [M4](../milestones.md#m4-incremental-computation-granularity-and-correctness).
 - Incremental work in the link and generate stages. See
-  [M4](../milestones.md#m4-incremental-reuse-in-link-and-generate).
+  [M5](../milestones.md#m5-incremental-reuse-in-link-and-generate).
 - Reuse across worktrees, project moves, or machines. See
-  [M2](../milestones.md#m2-shared-scan-cache).
+  [M3](../milestones.md#m3-shared-scan-cache).
 - Cross-platform and cross-project reuse. See [goals.md](../goals.md#non-goals).
 
 This scope is M1's. Later milestones change this document in place where they
@@ -146,7 +147,7 @@ hit. If it finds none, it is a cache miss: Rolldown runs the hooks and saves a
 new result.
 
 Key 1 and key 2 hold absolute paths, for example the module id and the paths
-in a dependency list. M2 is expected to change this, because absolute paths
+in a dependency list. M3 is expected to change this, because absolute paths
 differ between worktrees.
 
 For example, `a.ts` does not change, so key 1 stays the same. Its `transform`
@@ -329,7 +330,7 @@ Rolldown does not accept `true` for now. It has no default directory, so the
 caller must write the complete object. A host can accept `true` in its own
 config and build the object for Rolldown.
 
-This directory is the [local cache](../glossary.md) of one worktree. M2 is
+This directory is the [local cache](../glossary.md) of one worktree. M3 is
 expected to add a second directory option for the global cache, because the
 worktrees of a project need one directory that all of them can use.
 
@@ -509,7 +510,7 @@ for Rust plugins and JavaScript plugins alike.
 M1. The host covers the options and the code of a plugin, as
 [What the host must guarantee](#what-the-host-must-guarantee) says. A cache
 key for plugins is an open decision of
-[M3](../milestones.md#m3-incremental-computation-granularity-and-correctness).
+[M4](../milestones.md#m4-incremental-computation-granularity-and-correctness).
 
 The default is off because a hook can have side effects that Rolldown cannot
 see. For example, the `transform` hook of Vite's `vite:css-post` plugin
@@ -534,7 +535,7 @@ For example, the `transform` hooks of plugin A and plugin B both run for
 `app.tsx`. A has `cache: true`, and B does not set `cache`. Rolldown saves no
 result for `app.tsx`. After a restart, both A and B run. Caching each hook on
 its own, so that only B runs, is not part of M1. See
-[M3](../milestones.md#m3-incremental-computation-granularity-and-correctness).
+[M4](../milestones.md#m4-incremental-computation-granularity-and-correctness).
 
 **Marking one call.** A plugin that has the cache on can mark one hook call.
 Rolldown then saves no result for the module of that call. The other modules
@@ -693,7 +694,7 @@ Notes:
   itself and returned `moduleSideEffects`. That value is part of the saved
   resolve results. See [Inputs that M1 does not track](#caveats). The saved
   path still points at the `package.json` that `resolveId` found last time.
-- **Paths** are saved as absolute paths. M2 is expected to change this,
+- **Paths** are saved as absolute paths. M3 is expected to change this,
   because absolute paths differ between worktrees.
 
 ### Module meta
@@ -1086,8 +1087,9 @@ Two things are not settled for these modules:
 - The result of a hook can depend on which files exist in a directory. The
   hook can register the directory with `this.addWatchFile`, but Restart
   Validation covers files only. How a directory is validated after a restart
-  is not decided. See [Future work](0001-restart-validation.md#future-work)
-  in Restart Validation.
+  is not decided. It is part of [M2](../milestones.md#m2-plugin-state-and-untracked-inputs). See
+  [Future work](0001-restart-validation.md#future-work) in Restart
+  Validation.
 
   For example, `main.js` has `import.meta.glob('./pages/*.js')`, and the
   `transform` hook that expands it has the cache on. A user creates
@@ -1124,6 +1126,7 @@ Two things are not settled for these modules:
    - **Possible fix:** Save the call, and make the loaded module an input of
      the calling module. Rolldown then does not reuse the saved result of the
      calling module when the loaded module changes.
+   - **Milestone:** [M2](../milestones.md#m2-plugin-state-and-untracked-inputs).
 
 2. **Use the persistent cache with `experimental.nativeMagicString`.**
 
@@ -1245,7 +1248,7 @@ stages, such as output file names. Changing one of those causes a miss for
 every module without need. This is safe but wasteful. See
 [Future work](#future-work-1).
 
-M2 is expected to change this rule. Options such as `cwd` hold absolute paths,
+M3 is expected to change this rule. Options such as `cwd` hold absolute paths,
 which differ between worktrees, so hashing them as they are would prevent
 sharing.
 
@@ -1412,7 +1415,7 @@ The Rolldown CLI is a host too. It needs no rule of its own:
    a value such as `process.env.THEME` that a plugin hook reads. The user must
    put it into the cache key. A plugin could declare such values by name, so
    that Rolldown tracks them. This is part of
-   [M3](../milestones.md#m3-incremental-computation-granularity-and-correctness).
+   [M4](../milestones.md#m4-incremental-computation-granularity-and-correctness).
 
 [pattern-filter]: https://github.com/rolldown/rolldown/blob/67e2203c4/crates/rolldown_utils/src/pattern_filter.rs#L54-L67
 [cli-merge]: https://github.com/rolldown/rolldown/blob/67e2203c4/packages/rolldown/src/cli/commands/bundle.ts#L152-L172
@@ -1439,6 +1442,7 @@ The Rolldown CLI is a host too. It needs no rule of its own:
      read and the paths that it found missing. Make them inputs of the saved
      result of the importing module. Restart Validation already saves whether
      a tracked file exists.
+   - **Milestone:** [M2](../milestones.md#m2-plugin-state-and-untracked-inputs).
 
 2. **Limit the miss to the installed package that changed.**
 
