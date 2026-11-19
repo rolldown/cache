@@ -584,7 +584,7 @@ as JSON and reads it back:
 | --- | --- |
 | a string, a boolean, `null`, a finite number | a function, a symbol, a `BigInt`, `NaN`, `Infinity`, `-0` |
 | an array or a plain object made of these values | a `Map`, a `Set`, a `Date`, an instance of a class, an object without a prototype |
-| | an `undefined` item or a hole in an array |
+| | `undefined` inside a value: an item or a hole in an array, or the value of a property |
 | | a property with a symbol key, or a property that is not enumerable |
 | | an object that is used two times in one `meta`, or that contains itself |
 
@@ -593,9 +593,11 @@ enumerable property with a symbol key, or a key that is not well-formed
 UTF-16. A `meta` that is not an object, such as a string, cannot be saved
 either.
 
-`undefined` is handled in two ways. Under a top-level key, Rolldown saves it
-and sets it again on reuse. Deeper inside a value, a property with the value
-`undefined` is left out, as JSON does. See [Caveats](#caveats).
+`undefined` can be saved only as the value of a top-level key. Rolldown
+saves it, and sets it again on reuse. Deeper inside a value, `undefined`
+cannot be saved, because JSON leaves out such a property, and writes such an
+item as `null`. For example, `meta: { x: { a: undefined } }` cannot be saved:
+after a JSON round trip, `'a' in meta.x` would be `false`.
 
 When a cached hook returns a `meta` that cannot be saved, the
 module of the hook call gets no saved result. Rolldown also prints the
@@ -699,9 +701,6 @@ checks each `meta` value before it saves it. See
 [Values that cannot be saved](#values-that-cannot-be-saved). These changes
 pass the check:
 
-- A property with the value `undefined` deep inside a value is left out.
-  For example, `meta: { x: { a: undefined } }` comes back as `{ x: {} }`
-  after a reuse, so `'a' in meta.x` is `false`.
 - An object that the `meta` of two modules holds becomes two copies after a
   reuse. For example, a hook returns the same `icons` array in the `meta` of
   `a.js` and of `x.css`. After a reuse, a change to the array of `a.js` does
