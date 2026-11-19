@@ -75,7 +75,10 @@ that Rolldown does not track.
   Other reads are not designed yet.
 - [ ] **Inputs that Rolldown does not track yet.** Track the inputs that a
   module's result depends on and that Rolldown can observe by itself, other
-  than file contents, such as which files exist.
+  than file contents, such as which files exist. Not designed yet. Known
+  cases: the files that the resolver reads, and the files in a directory
+  that a hook reads, such as for `import.meta.glob`. See "Inputs that M1
+  does not track" in [0002 Caveats](design-docs/0002-persistent-scan-cache.md#caveats).
 
 ## M3: Shared scan cache
 
