@@ -81,8 +81,8 @@ which [rolldown/rolldown#11792][pr-11792] adds to Rolldown. In short:
   it.
 - **[Reading `moduleSideEffects`][design-reading-modulesideeffects].** A
   read returns the decided value. When the value is not decided, it returns
-  the value from the `treeshake.moduleSideEffects` option, from
-  `package.json`, or `true`.
+  a default value instead, so a read never returns "not decided". The linked
+  section gives the order of the defaults.
 - **[Lifetime][design-lifetime].** A full build starts every module with new
   values. A partial scan starts each changed module again from its creating
   resolution.
