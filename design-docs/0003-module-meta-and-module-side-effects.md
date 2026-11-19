@@ -311,6 +311,7 @@ as JSON and reads it back:
 | an array or a plain object made of these values | a `Map`, a `Set`, a `Date`, an instance of a class, an object without a prototype |
 | | `undefined` inside a value: an item or a hole in an array, or the value of a property |
 | | a property with a symbol key, or a property that is not enumerable |
+| | a getter or a setter, or an object that is frozen, sealed or cannot be extended |
 | | an object that is used two times in one `meta`, or that contains itself |
 
 The top-level keys also matter. A `meta` cannot be saved when it has an
@@ -421,17 +422,14 @@ saved result:
   the info that `get_module_info` returns. Rolldown sees only the calls
   `get_module_side_effects` and `set_module_side_effects`.
 
-**Values that change in a JSON round trip without a warning.** Rolldown
-checks each `meta` value before it saves it. See
-[Values that cannot be saved](#values-that-cannot-be-saved). These changes
-pass the check:
-
-- An object that the `meta` of two modules holds becomes two copies after a
-  reuse. For example, a hook returns the same `icons` array in the `meta` of
-  `a.js` and of `x.css`. After a reuse, a change to the array of `a.js` does
-  not change the array of `x.css`.
-- A getter deep inside a value is saved as the value that it returned once.
-- A frozen object deep inside a value is not frozen after a reuse.
+**An object that the `meta` of two modules holds.** Rolldown checks each
+`meta` value before it saves it. See
+[Values that cannot be saved](#values-that-cannot-be-saved). The check looks
+at one `meta` at a time, so it does not see an object that the `meta` of two
+modules holds. After a reuse, each module has its own copy. For example, a
+hook returns the same `icons` array in the `meta` of `a.js` and of `x.css`.
+After a reuse, a change to the array of `a.js` does not change the array of
+`x.css`.
 
 ## Open questions
 

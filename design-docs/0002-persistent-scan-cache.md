@@ -713,13 +713,14 @@ also gets none when a cached hook does one of these:
   another module and returns its `ModuleInfo`. The hook can use that
   information in its result, so the other module is an input that Rolldown
   does not track.
-- **A JavaScript hook sends a log that `JSON.stringify` cannot convert.**
+- **A JavaScript hook sends a log that changes when it is saved as JSON.**
   Rolldown saves the logs of a JavaScript plugin as JSON, so that it can send
-  them to `onLog` again on reuse. `this.warn({ message: 'x', meta: { n: 1n } })`
-  cannot be converted, because `JSON.stringify` throws for a `BigInt`. A value
-  that JSON converts with a loss is sent again in its JSON form:
-  `this.warn({ message: 'x', cause: new Error('y') })` is sent again with
-  `cause: {}`.
+  them to `onLog` again on reuse. So a log must be the same after it is
+  written as JSON and read back, by the same rule as saved `meta`. See
+  [0003 Values that cannot be saved](0003-module-meta-and-module-side-effects.md#values-that-cannot-be-saved).
+  For example, `this.warn({ message: 'x', cause: new Error('y') })` cannot be
+  saved, because JSON turns the `Error` into `{}`. A plain warning such as
+  `this.warn('x')` is saved.
 - **A hook returns `meta` that cannot be saved, or uses `meta` or
   `moduleSideEffects` through module info.** See
   [0003 When a module gets no saved result](0003-module-meta-and-module-side-effects.md#when-a-module-gets-no-saved-result).
