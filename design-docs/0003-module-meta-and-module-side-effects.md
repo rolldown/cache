@@ -311,6 +311,34 @@ A read is the same. If the hook reads `this.getModuleInfo(id).meta.from`,
 `x.css` gets no saved result, because `from` comes from the resolution in
 `a.js`.
 
+The module of the hook call gets no saved result also when the hook uses
+module info of another module. The other module is not affected. For
+example, a plugin records in `a.js` that it imports CSS:
+
+```js
+// The transform hook of x.css writes to the meta of a.js.
+transform: {
+  cache: true,
+  handler(code, id) {
+    if (id === '/src/x.css') {
+      this.getModuleInfo('/src/a.js').meta.importsCss = true
+    }
+  },
+}
+```
+
+`a.js` exists when this hook runs, because the resolution in `a.js` created
+`x.css`.
+
+- First build: the hook writes `importsCss` to `a.js`. `x.css` gets no
+  saved result, because its hook used module info. `a.js` gets a saved
+  result as usual. It holds only what the hooks of `a.js` returned, so it
+  does not hold `importsCss`.
+- Next build: `a.js` reuses its saved result, so its `meta` has no
+  `importsCss` yet. `x.css` has no saved result, so its hooks run again, and
+  the `transform` hook writes `importsCss` to `a.js` again. In the end,
+  `a.js` has the same `meta` as in the first build.
+
 A `this.resolve` result is not module info. It holds only the values of its
 own resolution, and it does not change a module. Rolldown does not track a
 read of it. The host covers it, as
