@@ -66,13 +66,19 @@ that Rolldown does not track.
 
 - [ ] **State that a plugin keeps on a module.** Track the data that a hook
   attaches to its module for later hooks, so that a reused module gives the
-  later hooks the same data.
+  later hooks the same data. Design: [Module meta and `moduleSideEffects`](design-docs/0003-module-meta-and-module-side-effects.md).
 - [ ] **State that crosses modules.** Track what a hook of one module reads
   from or does for other modules, so that reusing one module does not lose
-  or break the result of another.
+  or break the result of another. Design for `meta` and `moduleSideEffects`:
+  [When a module gets no saved result](design-docs/0003-module-meta-and-module-side-effects.md#when-a-module-gets-no-saved-result).
+  A hook that calls `this.load`: [0002 Future work](design-docs/0002-persistent-scan-cache.md#future-work).
+  Other reads are not designed yet.
 - [ ] **Inputs that Rolldown does not track yet.** Track the inputs that a
   module's result depends on and that Rolldown can observe by itself, other
-  than file contents, such as which files exist.
+  than file contents, such as which files exist. Not designed yet. Known
+  cases: the files that the resolver reads, and the files in a directory
+  that a hook reads, such as for `import.meta.glob`. See "Inputs that M1
+  does not track" in [0002 Caveats](design-docs/0002-persistent-scan-cache.md#caveats).
 
 ## M3: Shared scan cache
 
