@@ -349,9 +349,16 @@ read of it. The host covers it, as
 Rolldown saves the `meta` that a hook returns as JSON, one entry for each
 top-level key. This holds for `resolveId`, `resolveDynamicImport`, `load`
 and `transform`. The module keeps a top-level copy of the returned `meta`,
-as [Creation][design-creation] and [Hook results][design-hook-results] say. So only the
-keys count, and the returned object itself can be of any kind, such as an
-instance of a class.
+as [Creation][design-creation] and [Hook results][design-hook-results] say.
+
+Only a plain object, or an object without a prototype, is supported as the
+returned `meta`. Otherwise the same rules hold as for an object inside a
+value in the table below. Another object cannot be saved, such as an
+instance of a class, an array, or an object with a getter. For example, a
+getter can return another value each time it is read, so the copy that the
+module keeps could differ from what Rolldown saved. An object without a
+prototype is fine here, because the copy that the module keeps has the usual
+prototype anyway. Inside a value, it still cannot be saved.
 
 Each value under a top-level key must be the same after Rolldown writes it
 as JSON and reads it back:
@@ -365,10 +372,9 @@ as JSON and reads it back:
 | | a getter or a setter, or an object that is frozen, sealed or cannot be extended |
 | | an object that is used two times in one `meta`, or that contains itself |
 
-The top-level keys also matter. A `meta` cannot be saved when it has an
-enumerable property with a symbol key, or a key that is not well-formed
-UTF-16. A `meta` that is not an object, such as a string, cannot be saved
-either.
+The top-level keys also matter. A `meta` cannot be saved when a key is not
+well-formed UTF-16. A `meta` that is not an object, such as a string, cannot
+be saved either.
 
 `undefined` can be saved only as the value of a top-level key. Rolldown
 saves it, and sets it again on reuse. Deeper inside a value, `undefined`
