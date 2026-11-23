@@ -62,7 +62,7 @@ under the key `vite:css-post`, and `renderChunk` reads it with
 `this.getModuleInfo(id).meta`.
 
 The key is the name of the plugin, not `vite`. A returned `meta` merges
-only at the top level ([Hook results](https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#hook-results)). Other plugins set `meta.vite.cssScopeTo` for the same module, and
+only at the top level ([Hook results](https://github.com/rolldown/rolldown/blob/main/internal-docs/module-meta-and-side-effects/design.md#hook-results)). Other plugins set `meta.vite.cssScopeTo` for the same module, and
 `renderChunk` reads it. If `vite:css-post` returned
 `meta: { vite: { css } }`, it would remove `cssScopeTo`.
 

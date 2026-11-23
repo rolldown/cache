@@ -65,7 +65,7 @@ Status: `proposed`.
 The cache must give the same values as a build without the cache, so it
 depends on the rules for these values in a build without the cache. The
 rules are defined in [Module meta and `moduleSideEffects` — Design][design],
-which [rolldown/rolldown#11792][pr-11792] adds to Rolldown. In short:
+which [rolldown/rolldown#11792][pr-11792] added to Rolldown. In short:
 
 - **[Creation][design-creation].** The creating resolution of a module is
   the first resolution of its id that reaches the module loader in a build.
@@ -566,10 +566,10 @@ in `buildEnd`, and the output after tree shaking, must be the same.
     ([principle 2](../principles.md#2-caching-must-save-more-work-than-it-adds)).
 
 [meta-docs]: https://rolldown.rs/apis/plugin-api/inter-plugin-communication#custom-module-meta-data
-[design]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md
-[design-creation]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#creation
-[design-hook-results]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#hook-results
-[design-writes]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#writes
-[design-reading-modulesideeffects]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#reading-modulesideeffects
-[design-lifetime]: https://github.com/rolldown/rolldown/blob/align-module-options-with-rollup/internal-docs/module-meta-and-side-effects/design.md#lifetime
+[design]: https://github.com/rolldown/rolldown/blob/main/internal-docs/module-meta-and-side-effects/design.md
+[design-creation]: https://github.com/rolldown/rolldown/blob/main/internal-docs/module-meta-and-side-effects/design.md#creation
+[design-hook-results]: https://github.com/rolldown/rolldown/blob/main/internal-docs/module-meta-and-side-effects/design.md#hook-results
+[design-writes]: https://github.com/rolldown/rolldown/blob/main/internal-docs/module-meta-and-side-effects/design.md#writes
+[design-reading-modulesideeffects]: https://github.com/rolldown/rolldown/blob/main/internal-docs/module-meta-and-side-effects/design.md#reading-modulesideeffects
+[design-lifetime]: https://github.com/rolldown/rolldown/blob/main/internal-docs/module-meta-and-side-effects/design.md#lifetime
 [pr-11792]: https://github.com/rolldown/rolldown/pull/11792
