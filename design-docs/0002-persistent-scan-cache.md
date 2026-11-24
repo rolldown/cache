@@ -598,6 +598,7 @@ values that [`run_inner`][task] holds after `load_source` returns:
 | The module type | `module_type: ModuleType` |
 | The `meta` and `moduleSideEffects` values that `load` and `transform` returned | [0003 Saving and reuse](0003-module-meta-and-module-side-effects.md#saving-and-reuse) |
 | The sourcemaps of `load` and of each `transform` | `sourcemap_chain: Vec<SourcemapChainElement>` |
+| The `declaredModuleSize` that `load` or `transform` returned. Code splitting reads it. | `declared_module_size: Option<usize>` |
 | Whether Rolldown read the file from disk | `is_read_from_disk` in [`load_source`][load_source]. Rolldown reads it again in [Side effects](#side-effects). |
 
 **Resolve results.** They replace `resolveId`, once for each import. The
