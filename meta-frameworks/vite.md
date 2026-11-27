@@ -83,8 +83,9 @@ imports, and the files that a PostCSS plugin reads by itself. An example is
 **Files that become transform dependencies.** `vite:css` registers these
 files, so a change to one of them causes a miss for the module:
 
-- the file of `composes: x from './other.module.css'`. With PostCSS, such a
-  module gets no saved result. See the list below;
+- a file that a CSS preprocessor such as Sass imports and reports to Vite;
+- the file of `composes: x from './other.module.css'`, with PostCSS and with
+  lightningcss;
 - a file in the public directory that a `url()` points to;
 - a file in the public directory that lightningcss bundles for an `@import`.
 
@@ -99,10 +100,6 @@ result:
   [Modules that use an output asset file](#modules-that-use-an-output-asset-file).
 - The hook prints a message: a message to Vite's logger at any level, or a
   warning or a `@debug` message of Sass. Rolldown cannot print it again.
-  With PostCSS, a CSS modules file with `composes ... from` another file
-  always hits this rule: postcss-modules adds the CSS of the other file
-  without the `from` option, and Vite warns about it. lightningcss does not
-  cause this warning.
 - The module uses a file that Vite already warned about in this build, such
   as a Git LFS placeholder file that library mode inlines. Vite prints the
   warning once for each file, so it marks every module that uses the file,
