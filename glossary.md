@@ -13,7 +13,7 @@ storage layout, record placement, or user-facing options.
 | **Transform dependency** | A file that is not the module file itself but affects the result of one module, such as a file that a `load` or `transform` hook registers with `this.addWatchFile`. When it changes, Rolldown runs `load`, `transform`, parsing, and import resolution again for that module, both in a rebuild and after a restart. |
 | **Assumed-unchanged path** | A path whose module files and transform dependencies Rolldown does not hash. It treats them as unchanged. The host declares it and must provide a build dependency that changes whenever these files change. |
 | **Cache hit** | Rolldown finds a saved result for a module and reuses it. It does not run the hooks that the saved result replaces. |
-| **Cache miss** | Rolldown finds no saved result for a module. It runs the hooks and saves a new result. |
+| **Cache miss** | Rolldown finds no saved result for a module. It runs the hooks. It may save a new result. For example, it saves none when a hook returns `meta` that cannot be saved. See [0002 Caveats](design-docs/0002-persistent-scan-cache.md#caveats). |
 | **Module meta** | Data that a plugin attaches to one module, for other hooks to read. JavaScript plugins and Rust plugins have separate module meta. |
 | **Module task** | The work of the scan stage for one module: `load`, `transform`, parsing, and the `resolveId` or `resolveDynamicImport` call of each import of the module. |
 | **Saved result** | What Rolldown saves for one module under key 1 and key 2 of the persistent scan cache. On a cache hit, Rolldown reuses it as a whole. See [0002](design-docs/0002-persistent-scan-cache.md#what-a-saved-result-holds). |

@@ -44,6 +44,13 @@ In scope:
 - Reuse of saved scan results after a restart in the same worktree.
 - Changes made while Rolldown was stopped. Detecting them is defined in
   [Restart Validation](0001-restart-validation.md).
+- Changes made to files while a build runs.
+  [Changes during a build](0001-restart-validation.md#changes-during-a-build)
+  defines when Rolldown does not save a result because of them, and which
+  changes it does not detect.
+- A file that an import resolved to and that is gone, whether it was deleted
+  while Rolldown was stopped or during a build. See the note on
+  [a resolved file that is gone](#what-a-saved-result-holds).
 - Saving a module's scan result in a reduced form, such as its transform
   output. Reuse is still decided per module.
 
@@ -72,7 +79,7 @@ flowchart TD
     T["1. A module task starts"] --> K["2. Compute key 1 and key 2"]
     K --> Q{"3. Saved result found?"}
     Q -- "cache hit" --> R["4. Reuse the saved result"]
-    Q -- "cache miss" --> H["5. Run the hooks and save a new result"]
+    Q -- "cache miss" --> H["5. Run the hooks and save a new result when the rules allow it"]
     R --> N["6. The other steps of the module task run"]
     H --> N
 ```
@@ -93,7 +100,12 @@ Status: `decided`.
 
 Rolldown finds the saved result of a module with two keys. Each key is a hash
 of inputs. A saved result is only added, never changed. When an input
-changes, a key changes, and Rolldown does not find the old saved result.
+changes, a key changes, and Rolldown does not find the old saved result. Two
+inputs are not part of a key. Rolldown checks them on their own when it
+reuses a saved result: a file that an import resolved to must still exist,
+and the `package.json` of a resolve result must still be readable. See the
+notes on [a resolved file that is gone](#what-a-saved-result-holds) and on
+[`package.json`](#what-a-saved-result-holds).
 
 ```mermaid
 flowchart LR
@@ -137,14 +149,19 @@ two builds with the same key 1 can give different lists. Rolldown then adds
 the new list and keeps the old one.
 
 **Key 2** is a hash of one dependency list: each path in the list, and the
-current state of the file at that path. The state is "missing" or the content
-hash of the file, as in [Restart Validation](0001-restart-validation.md).
+state of the file at that path.
+[Restart Validation](0001-restart-validation.md#proposed-approach) defines
+the state.
+[Changes during a build](0001-restart-validation.md#changes-during-a-build)
+says when Rolldown gets the state of a registered file.
 
 **Lookup.** For a module, Rolldown computes key 1 and reads its dependency
 lists, newest first. For each list it computes key 2 and looks for a saved
 result under key 1 and key 2. It uses the first one it finds. This is a cache
-hit. If it finds none, it is a cache miss: Rolldown runs the hooks and saves a
-new result.
+hit. Rolldown does not use a saved result when one of the two checks in
+[Keys](#keys) fails. If Rolldown finds no saved result that it can use, it
+is a cache miss: Rolldown runs the hooks.
+[Writing](#when-the-cache-is-used) says when Rolldown saves a new result.
 
 Key 1 and key 2 hold absolute paths, for example the module id and the paths
 in a dependency list. M3 is expected to change this, because absolute paths
@@ -367,7 +384,11 @@ Rolldown reads the cache for them as a full scan does. When the browser asks
 for the same import again, the modules are already in memory, and Rolldown
 reuses them as an incremental build does.
 
-**Writing.** Rolldown saves a new result whenever the hooks of a module ran.
+**Writing.** When the hooks of a module ran, Rolldown saves a new result if
+the module can get one. See
+[Which modules get a saved result](#which-modules-get-a-saved-result),
+[Caveats](#caveats), and
+[Changes during a build](0001-restart-validation.md#changes-during-a-build).
 An incremental build updates the scan results in memory, as it does today,
 and also saves the new result to the cache. A write is incremental: it adds
 the new results and does not write the whole cache again. When Rolldown
@@ -611,6 +632,7 @@ fields for each import:
 | The import attributes of the import | `attributes` |
 | Whether it is external | `external`, `is_external_without_side_effects` |
 | The path of its `package.json` | the path of `package_json` |
+| Whether the resolved module id was the path of a file | See the note on a resolved file that is gone, below. |
 | The `meta` and `moduleSideEffects` values from the hook | [0003 Saving and reuse](0003-module-meta-and-module-side-effects.md#saving-and-reuse) |
 | Or: the module was not found | [`ResolveError::NotFound`][not_found] |
 
@@ -656,6 +678,33 @@ Notes:
   [0003 Saving and reuse](0003-module-meta-and-module-side-effects.md#saving-and-reuse)
   and [Inputs that M1 does not track](#caveats). The saved
   path still points at the `package.json` that `resolveId` found last time.
+  If Rolldown cannot read or parse the file at the saved path, it treats the
+  saved result of the importing module as not found. It is a cache miss, and
+  the module runs its hooks.
+- **A resolved file that is gone** (`decided`): When Rolldown resolves an
+  import, it records whether the resolved module id is the path of a file, by
+  the rule in [Modules whose id is not a file](#caveats). It records this at
+  the resolution, so a file that is deleted later in the same build is still
+  checked on reuse. On reuse, Rolldown checks that this file still exists. If
+  the file is gone, Rolldown treats the saved result of the importing module
+  as not found. It is a cache miss, and the module runs its hooks. Without
+  this check, the importing module would point at a module that cannot be
+  loaded. Every build would then fail for as long as Rolldown finds this
+  saved result.
+
+  For example, `main.js` imports `./b`, which resolved to `b.js`. A user
+  renames `b.js` to `b.ts`. After a restart, `main.js` runs its hooks again,
+  and `./b` resolves to `b.ts`.
+
+  An id that was not the path of a file at the resolution is not checked,
+  for example `\0virtual:foo` or `/proj/Foo.vue?vue&type=style`. No file
+  exists at such an id, so the check would always fail, and its importing
+  module would never reuse a saved result. An external module
+  is not checked either, because Rolldown does not load it.
+
+  This check sees only a file that is gone. A new file that takes over the
+  import while the old file stays is not seen. See
+  [Inputs that M1 does not track](#caveats).
 - **Paths** are saved as absolute paths. M3 is expected to change this,
   because absolute paths differ between worktrees.
 
@@ -680,8 +729,11 @@ does it again when it reuses the saved result:
 
 **The tsconfig of a module.** Steps that a restart skips read the tsconfig:
 `resolveId` reads its `paths`, and a `transform` hook can read its compiler
-options. With the cache, no step reads the tsconfig again after a restart, so
-Rolldown must not reuse the saved result when the tsconfig changed.
+options. When Rolldown reuses a saved result after a restart, these steps do
+not run, so they do not read the tsconfig again. So Rolldown must not reuse
+the saved result when the tsconfig changed. Some
+tsconfig changes are not tracked in M1. See
+[Inputs that M1 does not track](#caveats).
 
 For example, a tsconfig maps `@/*` to `src/*`, and `a.ts` imports `@/b`. A
 user changes the mapping to `lib/*` while Rolldown is stopped. If the
@@ -735,11 +787,15 @@ use the persistent cache in this mode.
 [Future work](#future-work) lists a possible fix for a hook that calls
 `this.load` and for `experimental.nativeMagicString`.
 
-**A module that depends on a file that the build writes.** Such a module
-never reuses its saved result. Each restart adds one more saved result for
-it, until [`maxAge`](#removing-saved-results) removes it. It never reuses a
-wrong result. For example, a hook registers `reports/stats.json`, which
-every build writes again.
+**A module that depends on a file that the build writes.** For example, a
+hook registers `reports/stats.json`, which every build writes again. When
+each build writes contents that no earlier build wrote, such a module never
+reuses a saved result, so it never reuses a wrong result. Each restart can
+add one more saved result for the module. `maxAge` removes these saved
+results later. See [Removing saved results](#removing-saved-results). When
+the build writes the file during the scan, before Rolldown saves anything
+for the module, the `mtime` check can stop the save. See
+[Changes during a build](0001-restart-validation.md#changes-during-a-build).
 
 **Modules whose id is not a file.** In M1, a module gets a saved result only
 when its id is the absolute path of a file that exists. Rolldown does not
@@ -773,10 +829,21 @@ Two things are not settled for these modules:
 **Inputs that M1 does not track.**
 
 - `resolveId` is skipped, but the files that the resolver reads are not
-  tracked. The one exception is the tsconfig that governs the importing
-  module. See [Side effects](#side-effects). A file that this tsconfig pulls
-  in with `extends` is not tracked, and neither is a nearer `tsconfig.json`
-  that a user creates later. See item 1 of [Future work](#future-work-2).
+  tracked. There are two exceptions:
+  - The tsconfig that governs the importing module is tracked. See
+    [Side effects](#side-effects). A file that this tsconfig pulls in with
+    `extends` is not tracked. A change that makes another tsconfig govern
+    the module is not tracked either. For example, a user:
+    - creates a `tsconfig.json` that is nearer to the module;
+    - changes the `include` of a nearer `tsconfig.json`, so that it now
+      covers the module;
+    - removes the tsconfig of the module from the `references` of a
+      solution-style `tsconfig.json`.
+  - The file that an import resolved to is checked, but only for whether it
+    still exists. See the note on
+    [a resolved file that is gone](#what-a-saved-result-holds).
+
+  See item 1 of [Future work](#future-work-2).
 - The result of a hook can depend on which files exist in a directory. The
   hook can register the directory with `this.addWatchFile`, but Restart
   Validation covers files only. How a directory is validated after a restart
@@ -883,9 +950,15 @@ Seen from one module, its saved result is reused only when all of these hold:
 4. No build dependency changed.
 5. The module file did not change.
 6. No transform dependency of the module changed.
+7. Each file that an import resolved to still exists. Only an import that
+   is not external, and whose id was the path of a file at the resolution,
+   is checked. See the note on
+   [a resolved file that is gone](#what-a-saved-result-holds).
+8. Rolldown can still read and parse the `package.json` of each resolve
+   result. See the note on [`package.json`](#what-a-saved-result-holds).
 
-If 1, 2, 3, or 4 fails, every module is a miss. If 5 or 6 fails, that module
-is a miss, and the other modules are not affected.
+If 1, 2, 3, or 4 fails, every module is a miss. If 5, 6, 7, or 8 fails, that
+module is a miss, and the other modules are not affected.
 In 5 and 6, Rolldown treats a file whose path matches
 [`assumeUnchanged`](#host-inputs) as unchanged.
 
@@ -1124,16 +1197,17 @@ The Rolldown CLI is a host too. It needs no rule of its own:
      looked for and did not find. For example:
      - `./b` resolves to `b/index.ts`. Later a user creates `b.ts`, which
        takes over the import.
-     - A user creates a `tsconfig.json` that is nearer to the importing
-       module, or changes a file that a tsconfig pulls in with `extends`.
+     - A user changes which tsconfig governs the importing module, or
+       changes a file that a tsconfig pulls in with `extends`. See
+       [Inputs that M1 does not track](#caveats).
 
      Rolldown's incremental build has this defect today. A restart repairs
      it, because a restart runs a full scan. With the cache, a restart reuses
      the saved result, so it no longer repairs it.
    - **Possible fix:** Record, for each import, the paths that the resolver
      read and the paths that it found missing. Make them inputs of the saved
-     result of the importing module. Restart Validation already saves whether
-     a tracked file exists.
+     result of the importing module. Restart Validation already gives a
+     missing tracked file the state "missing", which is part of key 2.
    - **Milestone:** [M2](../milestones.md#m2-plugin-state-and-untracked-inputs).
 
 2. **Limit the miss to the installed package that changed.**
